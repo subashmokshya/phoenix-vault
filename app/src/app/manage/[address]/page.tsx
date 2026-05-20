@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useParams } from "next/navigation";
-import { usePrivy } from "@privy-io/react-auth";
+import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { getPoolByAddress } from "@/lib/mock-data";
@@ -12,7 +12,7 @@ export default function ManagePoolPage() {
   const params = useParams();
   const address = params.address as string;
   const pool = getPoolByAddress(address);
-  const { authenticated, login } = usePrivy();
+  const { connected, requireWallet } = useSolanaWallet();
   const [symbol, setSymbol] = useState("SOL-PERP");
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [size, setSize] = useState("0.1");
@@ -30,6 +30,11 @@ export default function ManagePoolPage() {
     );
   }
 
+  function handlePlaceOrder() {
+    if (!requireWallet()) return;
+    alert("Build tx via Rise SDK + Flight — wallet connected.");
+  }
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
       <div className="flex items-center justify-between mb-8">
@@ -43,6 +48,7 @@ export default function ManagePoolPage() {
           variant={paused ? "primary" : "danger"}
           size="sm"
           onClick={() => setPaused(!paused)}
+          disabled={!connected}
         >
           {paused ? "Resume Vault" : "Pause Vault"}
         </Button>
@@ -95,11 +101,8 @@ export default function ManagePoolPage() {
             placeholder="Size (base units)"
             className="w-full h-11 px-4 rounded-xl bg-surface-2 border border-border"
           />
-          <Button
-            className="w-full"
-            onClick={() => (authenticated ? alert("Build tx via Rise SDK + Flight") : login())}
-          >
-            {authenticated ? `Place ${orderType} ${side}` : "Connect Wallet"}
+          <Button className="w-full" onClick={handlePlaceOrder}>
+            {connected ? `Place ${orderType} ${side}` : "Connect Wallet"}
           </Button>
           <p className="text-xs text-muted">
             Orders route through Phoenix Flight (5 bps builder fee to platform).
@@ -120,10 +123,20 @@ export default function ManagePoolPage() {
           <Card>
             <h3 className="font-semibold mb-3">Actions</h3>
             <div className="space-y-2">
-              <Button variant="secondary" className="w-full" size="sm">
+              <Button
+                variant="secondary"
+                className="w-full"
+                size="sm"
+                disabled={!connected}
+              >
                 Set Flat (allow deposits)
               </Button>
-              <Button variant="secondary" className="w-full" size="sm">
+              <Button
+                variant="secondary"
+                className="w-full"
+                size="sm"
+                disabled={!connected}
+              >
                 Harvest Fees
               </Button>
             </div>

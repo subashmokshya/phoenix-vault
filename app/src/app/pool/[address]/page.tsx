@@ -9,27 +9,45 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { getPoolByAddress } from "@/lib/mock-data";
 import { formatBps, cn } from "@/lib/utils";
+import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 
 const RANGES = ["1d", "7d", "30d", "all"] as const;
 
 export default function PoolDetailPage() {
   const params = useParams();
-  const address = params.address as string;
-  const pool = getPoolByAddress(address);
+  const poolAddress = params.address as string;
+  const pool = getPoolByAddress(poolAddress);
   const [range, setRange] = useState<(typeof RANGES)[number]>("7d");
   const [navHistory, setNavHistory] = useState(pool?.navHistory ?? []);
   const [depositAmount, setDepositAmount] = useState("");
   const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
+  const [txStatus, setTxStatus] = useState<string | null>(null);
+  const { connected, address: walletAddress, connect, requireWallet } =
+    useSolanaWallet();
+
+  async function handleVaultAction() {
+    if (!requireWallet()) return;
+    const amount = parseFloat(depositAmount);
+    if (!amount || amount <= 0) {
+      setTxStatus("Enter a valid USDC amount");
+      return;
+    }
+    setTxStatus(
+      mode === "deposit"
+        ? `Ready to deposit ${amount} USDC from ${walletAddress?.slice(0, 4)}… — sign init_vault deposit tx on-chain when program is deployed.`
+        : `Withdrawal request queued for ${amount} USDC — processed after cooldown when vault is flat.`
+    );
+  }
 
   useEffect(() => {
     if (!pool) return;
-    fetch(`/api/pools/${address}/nav?range=${range}`)
+    fetch(`/api/pools/${poolAddress}/nav?range=${range}`)
       .then((r) => r.json())
       .then((d) => {
         if (d.history?.length) setNavHistory(d.history);
       })
       .catch(() => {});
-  }, [address, range, pool]);
+  }, [poolAddress, range, pool]);
 
   if (!pool) {
     return (
@@ -150,12 +168,33 @@ export default function PoolDetailPage() {
               Deposits only execute when the vault has zero open positions
               (manager-flat window).
             </p>
-            <Button className="w-full" size="lg">
-              {mode === "deposit" ? "Deposit" : "Request Withdraw"}
+            <Button className="w-full" size="lg" onClick={handleVaultAction}>
+              {!connected
+                ? "Connect Wallet"
+                : mode === "deposit"
+                  ? "Deposit"
+                  : "Request Withdraw"}
             </Button>
-            <p className="text-xs text-muted text-center mt-3">
-              Connect wallet to continue
-            </p>
+            {txStatus && (
+              <p className="text-xs text-muted text-center mt-3">{txStatus}</p>
+            )}
+            {!connected && !txStatus && (
+              <p className="text-xs text-muted text-center mt-3">
+                <button
+                  type="button"
+                  onClick={connect}
+                  className="text-accent hover:underline"
+                >
+                  Connect Solana wallet
+                </button>{" "}
+                to continue
+              </p>
+            )}
+            {connected && walletAddress && !txStatus && (
+              <p className="text-xs text-muted text-center mt-3 font-mono">
+                {walletAddress.slice(0, 4)}…{walletAddress.slice(-4)}
+              </p>
+            )}
           </Card>
         </aside>
       </div>

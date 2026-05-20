@@ -7,7 +7,7 @@ Decentralized vault hub for [Phoenix](https://docs.phoenix.trade/) perpetual fut
 | Layer | Tech |
 |-------|------|
 | On-chain | Anchor (`programs/phoenix-vault`) |
-| Frontend | Next.js 14, Tailwind, Framer Motion, Privy |
+| Frontend | Next.js 14, Tailwind, Framer Motion, Solana Wallet Adapter |
 | Backend | Next.js API routes, Drizzle + Neon Postgres |
 | Indexer | Vercel Cron → Phoenix REST API |
 | Trading | `@ellipsis-labs/rise` SDK + Phoenix Flight |
@@ -20,7 +20,7 @@ cd app && npm install
 
 # Copy env
 cp .env.example .env.local
-# Fill NEXT_PUBLIC_PRIVY_APP_ID, JWT_SECRET (optional DATABASE_URL for live DB)
+# Fill JWT_SECRET (optional DATABASE_URL for live DB)
 
 # Dev server (works without DB — uses demo pools)
 npm run dev

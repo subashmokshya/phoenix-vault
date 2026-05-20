@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -15,27 +15,30 @@ const STRATEGIES = [
 ];
 
 export default function CreatePoolPage() {
-  const { authenticated, login } = usePrivy();
+  const { connected, address, connect, requireWallet } = useSolanaWallet();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [strategy, setStrategy] = useState(STRATEGIES[0]);
   const [perfFee, setPerfFee] = useState(20);
   const [mgmtFee, setMgmtFee] = useState(1);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
-    if (!authenticated) {
-      login();
+    if (!requireWallet() || !address) {
+      connect();
       return;
     }
     setSubmitting(true);
+    setError(null);
     try {
       const res = await fetch("/api/pools", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           address: `Vault${Date.now()}`,
-          manager: "pending",
+          manager: address,
           name,
           description,
           strategyTag: strategy,
@@ -43,9 +46,14 @@ export default function CreatePoolPage() {
           mgmtFeeBps: mgmtFee * 100,
         }),
       });
-      if (res.ok) {
-        alert("Pool metadata saved. Complete on-chain init_vault via your wallet.");
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed to create pool");
+        return;
       }
+      alert("Pool metadata saved. Complete on-chain init_vault via your wallet.");
+    } catch {
+      setError("Network error");
     } finally {
       setSubmitting(false);
     }
@@ -61,6 +69,12 @@ export default function CreatePoolPage() {
       </p>
 
       <Card className="space-y-6">
+        {connected && address && (
+          <p className="text-sm text-muted">
+            Manager wallet:{" "}
+            <span className="font-mono text-foreground">{address}</span>
+          </p>
+        )}
         <div>
           <label className="text-xs text-muted uppercase tracking-wider">
             Pool Name
@@ -129,13 +143,14 @@ export default function CreatePoolPage() {
             />
           </div>
         </div>
+        {error && <p className="text-sm text-negative">{error}</p>}
         <Button
           className="w-full"
           size="lg"
           onClick={handleCreate}
           disabled={submitting || !name}
         >
-          {authenticated ? "Create Pool" : "Connect Wallet"}
+          {connected ? "Create Pool" : "Connect Wallet"}
         </Button>
         <p className="text-xs text-muted text-center">
           Step 1: Save metadata · Step 2: Sign init_vault on-chain · Step 3:

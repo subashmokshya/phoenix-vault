@@ -1,37 +1,31 @@
 "use client";
 
-import { usePrivy } from "@privy-io/react-auth";
+import Link from "next/link";
+import { useWallet } from "@/lib/wallet/context";
 import { Button } from "./ui/button";
 
 export function WalletButton() {
-  const hasPrivy = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
+  const { connected, address, connecting, openModal, disconnect } = useWallet();
 
-  if (!hasPrivy) {
+  if (connected && address) {
     return (
-      <Button size="sm" variant="secondary" disabled title="Set NEXT_PUBLIC_PRIVY_APP_ID">
-        Connect
-      </Button>
-    );
-  }
-
-  return <WalletButtonInner />;
-}
-
-function WalletButtonInner() {
-  const { ready, authenticated, login, logout, user } = usePrivy();
-  const wallet = user?.wallet?.address;
-
-  if (ready && authenticated && wallet) {
-    return (
-      <Button variant="ghost" size="sm" onClick={logout}>
-        {wallet.slice(0, 4)}…{wallet.slice(-4)}
-      </Button>
+      <div className="flex items-center gap-2">
+        <Link
+          href="/portfolio"
+          className="hidden sm:block text-sm text-muted hover:text-foreground font-mono tabular-nums"
+        >
+          {address.slice(0, 4)}…{address.slice(-4)}
+        </Link>
+        <Button variant="ghost" size="sm" onClick={disconnect}>
+          Disconnect
+        </Button>
+      </div>
     );
   }
 
   return (
-    <Button size="sm" onClick={login} disabled={!ready}>
-      Connect
+    <Button size="sm" onClick={openModal} disabled={connecting}>
+      {connecting ? "Connecting…" : "Connect Wallet"}
     </Button>
   );
 }

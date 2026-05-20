@@ -4,7 +4,7 @@
 
 1. `cd app && npm install && npm run dev`
 2. App runs with mock pools if `DATABASE_URL` is unset.
-3. Connect wallet via Privy (set `NEXT_PUBLIC_PRIVY_APP_ID` from [dashboard.privy.io](https://dashboard.privy.io)).
+3. Connect wallet via Solana Wallet Adapter (Phantom, Solflare, etc.). Sign the SIWS message to authenticate API routes.
 
 ## Devnet program deploy
 
@@ -48,7 +48,8 @@ Fees accrue to the builder's Phoenix trader account.
 
 | Variable | Required | Notes |
 |----------|----------|-------|
-| `NEXT_PUBLIC_PRIVY_APP_ID` | Yes | Privy dashboard |
+| `NEXT_PUBLIC_SOLANA_RPC` | Yes | Mainnet or devnet RPC URL |
+| `JWT_SECRET` | Yes | Random 32+ chars for SIWS sessions |
 | `JWT_SECRET` | Yes | Random 32+ chars |
 | `DATABASE_URL` | Recommended | Neon Postgres |
 | `CRON_SECRET` | Recommended | Protects `/api/cron/*` |

@@ -31,6 +31,7 @@ export async function createSession(wallet: string) {
 }
 
 export async function getSession(): Promise<{ wallet: string } | null> {
+  if (!process.env.JWT_SECRET) return null;
   const token = cookies().get(COOKIE_NAME)?.value;
   if (!token) return null;
   try {
