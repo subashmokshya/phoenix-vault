@@ -1,12 +1,8 @@
 {
   "crons": [
     {
-      "path": "/api/cron/nav",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/cron/leaderboard",
-      "schedule": "*/5 * * * *"
+      "path": "/api/cron/daily",
+      "schedule": "0 0 * * *"
     }
   ]
 }
