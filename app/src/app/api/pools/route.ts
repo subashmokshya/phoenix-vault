@@ -1,0 +1,65 @@
+import { NextRequest, NextResponse } from "next/server";
+import { listPools } from "@/lib/pools-service";
+import { getDb, schema } from "@/lib/db";
+import { getSession } from "@/lib/auth";
+import { z } from "zod";
+
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const sort = searchParams.get("sort") as
+    | "pnl7d"
+    | "pnl30d"
+    | "aum"
+    | "newest"
+    | null;
+  const strategy = searchParams.get("strategy") ?? undefined;
+  const featured = searchParams.get("featured") === "true";
+  const limit = parseInt(searchParams.get("limit") ?? "50", 10);
+
+  const pools = await listPools({ sort: sort ?? undefined, strategy, featured, limit });
+  return NextResponse.json({ pools });
+}
+
+const createPoolSchema = z.object({
+  address: z.string().min(32),
+  manager: z.string().min(32),
+  name: z.string().min(1).max(64),
+  description: z.string().max(500).optional(),
+  strategyTag: z.string().min(1),
+  perfFeeBps: z.number().min(0).max(5000),
+  mgmtFeeBps: z.number().min(0).max(1000),
+  phoenixAuthority: z.string().optional(),
+  vaultIndex: z.number().optional(),
+});
+
+export async function POST(req: NextRequest) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const body = await req.json();
+  const parsed = createPoolSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  if (!process.env.DATABASE_URL) {
+    return NextResponse.json({ ok: true, mock: true, pool: parsed.data });
+  }
+
+  const db = getDb();
+  await db.insert(schema.pools).values({
+    address: parsed.data.address,
+    manager: parsed.data.manager,
+    name: parsed.data.name,
+    description: parsed.data.description ?? "",
+    strategyTag: parsed.data.strategyTag,
+    perfFeeBps: parsed.data.perfFeeBps,
+    mgmtFeeBps: parsed.data.mgmtFeeBps,
+    phoenixAuthority: parsed.data.phoenixAuthority,
+    vaultIndex: parsed.data.vaultIndex ?? 0,
+  });
+
+  return NextResponse.json({ ok: true, pool: parsed.data });
+}

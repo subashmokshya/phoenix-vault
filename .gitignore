@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build
+.next/
+out/
+dist/
+target/
+.anchor/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Solana
+test-ledger/
+.keypairs/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Vercel
+.vercel
+
+# Drizzle
+drizzle/meta/
+
+# Misc
+*.tsbuildinfo
+coverage/
