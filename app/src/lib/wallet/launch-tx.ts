@@ -6,6 +6,7 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { getLatestBlockhashWithFallback, getRpcUrls } from "./rpc";
 
 const MEMO_PROGRAM_ID = new PublicKey(
   "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
@@ -25,6 +26,7 @@ export type LaunchResult = {
   signature: string;
   payload: LaunchPayload;
   explorerUrl: string;
+  rpcUrl: string;
 };
 
 type SignAndSendFn = (tx: Transaction) => Promise<{ signature: string }>;
@@ -45,17 +47,17 @@ function detectCluster(rpcUrl: string): "devnet" | "testnet" | "mainnet" {
 }
 
 export async function buildAndSendLaunchTx(params: {
-  connection: Connection;
   payer: PublicKey;
   payload: LaunchPayload;
   signAndSend: SignAndSendFn;
 }): Promise<LaunchResult> {
-  const { connection, payer, payload, signAndSend } = params;
+  const { payer, payload, signAndSend } = params;
+
+  const rpcUrls = getRpcUrls();
+  const { blockhash, lastValidBlockHeight, rpcUrl } =
+    await getLatestBlockhashWithFallback(rpcUrls, "confirmed");
 
   const ix = buildMemoIx(payer, payload);
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash(
-    "confirmed"
-  );
   const tx = new Transaction();
   tx.feePayer = payer;
   tx.recentBlockhash = blockhash;
@@ -64,20 +66,20 @@ export async function buildAndSendLaunchTx(params: {
 
   const { signature } = await signAndSend(tx);
 
-  // Best-effort confirmation; ignore confirmation errors so UI still shows the signature.
+  // Best-effort confirmation against the same RPC; ignore failures so UI still shows the signature.
   try {
-    await connection.confirmTransaction(
+    const conn = new Connection(rpcUrl, "confirmed");
+    await conn.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight },
       "confirmed"
     );
   } catch {
-    // ignore — signature is still trackable on explorer
+    // ignore — signature is trackable on explorer regardless
   }
 
-  const cluster = detectCluster(connection.rpcEndpoint);
-  const clusterParam =
-    cluster === "mainnet" ? "" : `?cluster=${cluster}`;
+  const cluster = detectCluster(rpcUrl);
+  const clusterParam = cluster === "mainnet" ? "" : `?cluster=${cluster}`;
   const explorerUrl = `https://explorer.solana.com/tx/${signature}${clusterParam}`;
 
-  return { signature, payload, explorerUrl };
+  return { signature, payload, explorerUrl, rpcUrl };
 }

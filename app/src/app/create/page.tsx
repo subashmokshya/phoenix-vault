@@ -39,7 +39,7 @@ export default function CreatePoolPage() {
   const [launch, setLaunch] = useState<LaunchState>({ phase: "idle" });
 
   const { connected, address, requireWallet } = useSolanaWallet();
-  const { connection, signAndSendTransaction, cluster } = useWallet();
+  const { signAndSendTransaction, cluster } = useWallet();
 
   const canLaunch =
     connected &&
@@ -47,7 +47,7 @@ export default function CreatePoolPage() {
     draft.strategyTag.length > 0;
 
   async function launchPool() {
-    if (!requireWallet() || !address || !connection || !signAndSendTransaction) {
+    if (!requireWallet() || !address || !signAndSendTransaction) {
       return;
     }
 
@@ -55,7 +55,6 @@ export default function CreatePoolPage() {
 
     try {
       const result = await buildAndSendLaunchTx({
-        connection,
         payer: new PublicKey(address),
         signAndSend: signAndSendTransaction,
         payload: {

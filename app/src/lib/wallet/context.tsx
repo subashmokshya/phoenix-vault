@@ -13,7 +13,6 @@ import {
   Connection,
   PublicKey,
   Transaction,
-  clusterApiUrl,
 } from "@solana/web3.js";
 import {
   fetchSession,
@@ -22,9 +21,9 @@ import {
 } from "@/lib/siws-client";
 import { AVAILABLE_WALLETS, PHANTOM } from "./adapters";
 import type { SolanaWalletAdapter } from "./types";
+import { primaryRpcUrl } from "./rpc";
 
-const RPC =
-  process.env.NEXT_PUBLIC_SOLANA_RPC ?? clusterApiUrl("mainnet-beta");
+const RPC = primaryRpcUrl();
 
 type WalletContextValue = {
   connection: Connection | null;
