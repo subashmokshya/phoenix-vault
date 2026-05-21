@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, X, Bot, AlertCircle } from "lucide-react";
+import { Check, X, Bot, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { ProposedTrade } from "@/lib/ai/strategy-ops-tools";
@@ -12,9 +12,20 @@ type Props = {
   onApprove: (t: ProposedTrade) => void;
   onDismiss: (id: string) => void;
   autoExecute: boolean;
+  busyId?: string | null;
+  disabled?: boolean;
+  disabledReason?: string;
 };
 
-export function ProposedTrades({ trades, onApprove, onDismiss, autoExecute }: Props) {
+export function ProposedTrades({
+  trades,
+  onApprove,
+  onDismiss,
+  autoExecute,
+  busyId,
+  disabled,
+  disabledReason,
+}: Props) {
   return (
     <Card className="space-y-4">
       <header className="flex items-center justify-between">
@@ -34,6 +45,13 @@ export function ProposedTrades({ trades, onApprove, onDismiss, autoExecute }: Pr
           </span>
         )}
       </header>
+
+      {disabled && disabledReason && trades.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface-2/40 px-3 py-2 text-[11px] text-muted flex items-center gap-2">
+          <AlertCircle className="h-3 w-3 text-accent" />
+          {disabledReason}
+        </div>
+      )}
 
       {trades.length === 0 ? (
         <div className="text-center text-muted text-xs py-6">
@@ -92,14 +110,26 @@ export function ProposedTrades({ trades, onApprove, onDismiss, autoExecute }: Pr
                     size="sm"
                     className="flex-1"
                     onClick={() => onApprove(t)}
+                    disabled={Boolean(disabled) || busyId === t.id}
+                    title={disabled ? disabledReason : undefined}
                   >
-                    <Check className="h-3.5 w-3.5 mr-1" />
-                    Approve & route
+                    {busyId === t.id ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        Routing…
+                      </>
+                    ) : (
+                      <>
+                        <Check className="h-3.5 w-3.5 mr-1" />
+                        Approve & route
+                      </>
+                    )}
                   </Button>
                   <Button
                     size="sm"
                     variant="secondary"
                     onClick={() => onDismiss(t.id)}
+                    disabled={busyId === t.id}
                   >
                     <X className="h-3.5 w-3.5" />
                   </Button>

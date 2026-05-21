@@ -67,7 +67,15 @@ export function saveQueue(addr: string, queue: ProposedTrade[]): void {
 
 export type ApprovedTrade = ProposedTrade & {
   approvedAt: number;
-  status: "queued" | "submitted" | "filled" | "rejected";
+  status: "queued" | "submitting" | "submitted" | "filled" | "rejected";
+  mode?: "live" | "simulated";
+  signature?: string;
+  explorerUrl?: string;
+  referencePrice?: number;
+  quantity?: number;
+  tpTrigger?: number;
+  slTrigger?: number;
+  error?: string;
 };
 
 export function loadApproved(addr: string): ApprovedTrade[] {

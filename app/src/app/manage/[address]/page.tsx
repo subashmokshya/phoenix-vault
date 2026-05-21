@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { ShieldCheck, ShieldOff } from "lucide-react";
+import { ShieldCheck, ShieldOff, ExternalLink, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { getPoolByAddress, type PoolCard } from "@/lib/mock-data";
@@ -34,6 +34,8 @@ import {
   type ApprovedTrade,
 } from "@/lib/strategy/store";
 import { useSolanaWallet } from "@/hooks/use-solana-wallet";
+import { useWallet } from "@/lib/wallet/context";
+import { placePhoenixOrder } from "@/lib/phoenix/order-client";
 import { formatUsd, cn } from "@/lib/utils";
 
 export default function ManagePoolPage() {
@@ -51,10 +53,39 @@ export default function ManagePoolPage() {
   const [hydrated, setHydrated] = useState(false);
 
   const { connected, address: walletAddress } = useSolanaWallet();
+  const { signAndSendTransaction } = useWallet();
   const positions = useLivePositions(address);
   const trades = useLiveTrades(address);
+  const [routingId, setRoutingId] = useState<string | null>(null);
+  const [routeFlash, setRouteFlash] = useState<{
+    kind: "ok" | "err" | "blocked";
+    text: string;
+    sig?: string;
+    explorerUrl?: string;
+  } | null>(null);
 
   const isManager = !!walletAddress && !!pool && walletAddress === pool.manager;
+
+  const referencePriceFor = useCallback(
+    (market: string): number => {
+      const livePos = positions.data?.positions.find(
+        (p) => p.market === market
+      );
+      if (livePos?.markPrice) return livePos.markPrice;
+      const lastTrade = (trades.data ?? []).find((t) => t.market === market);
+      if (lastTrade?.price) return lastTrade.price;
+      // Conservative defaults for common Phoenix markets so demo flow still works.
+      const defaults: Record<string, number> = {
+        "SOL-PERP": 168,
+        "BTC-PERP": 96000,
+        "ETH-PERP": 3400,
+        "BONK-PERP": 0.000022,
+        "JUP-PERP": 0.85,
+      };
+      return defaults[market] ?? 100;
+    },
+    [positions.data, trades.data]
+  );
 
   useEffect(() => {
     let active = true;
@@ -96,21 +127,143 @@ export default function ManagePoolPage() {
     if (hydrated) saveApproved(address, approved);
   }, [address, approved, hydrated]);
 
-  function approveTrade(t: ProposedTrade) {
-    setQueue((q) => q.filter((x) => x.id !== t.id));
-    setApproved((a) => [
-      { ...t, approvedAt: Date.now(), status: "submitted" },
-      ...a,
-    ]);
-  }
+  const approveTrade = useCallback(
+    async (t: ProposedTrade) => {
+      if (!isManager || !walletAddress || !signAndSendTransaction) {
+        setRouteFlash({
+          kind: "err",
+          text: "Connect the manager wallet to route orders.",
+        });
+        return;
+      }
+      setRoutingId(t.id);
+      setRouteFlash(null);
+
+      // Optimistically move the trade out of the proposal queue into approved/submitting.
+      const referencePrice = referencePriceFor(t.market);
+      const leverage = Math.max(1, Math.round((spec.leverageMin + spec.leverageMax) / 2));
+      const pendingEntry: ApprovedTrade = {
+        ...t,
+        approvedAt: Date.now(),
+        status: "submitting",
+        referencePrice,
+      };
+      setQueue((q) => q.filter((x) => x.id !== t.id));
+      setApproved((a) => [pendingEntry, ...a]);
+
+      try {
+        const outcome = await placePhoenixOrder(
+          {
+            authority: walletAddress,
+            market: t.market,
+            side: t.side,
+            orderType: t.orderType,
+            sizeUsd: t.sizeUsd,
+            limitPrice: t.limitPrice,
+            referencePrice,
+            takeProfitPct: spec.takeProfitPct,
+            stopLossPct: spec.stopLossPct,
+            leverage,
+          },
+          signAndSendTransaction
+        );
+
+        if (outcome.ok) {
+          setApproved((a) =>
+            a.map((row) =>
+              row.id === t.id
+                ? {
+                    ...row,
+                    status: "filled",
+                    mode: "live",
+                    signature: outcome.signature,
+                    explorerUrl: outcome.explorerUrl,
+                    quantity: outcome.quantity,
+                    referencePrice: outcome.referencePrice,
+                    tpTrigger: outcome.tpTrigger,
+                    slTrigger: outcome.slTrigger,
+                  }
+                : row
+            )
+          );
+          setRouteFlash({
+            kind: "ok",
+            text: `Routed ${t.side.toUpperCase()} ${t.market} on Phoenix.`,
+            sig: outcome.signature,
+            explorerUrl: outcome.explorerUrl,
+          });
+        } else if (outcome.mode === "blocked") {
+          // Phoenix beta gating: simulate but keep the user informed.
+          setApproved((a) =>
+            a.map((row) =>
+              row.id === t.id
+                ? {
+                    ...row,
+                    status: "submitted",
+                    mode: "simulated",
+                    error: outcome.error,
+                  }
+                : row
+            )
+          );
+          setRouteFlash({
+            kind: "blocked",
+            text: "Phoenix beta access required for live routing — trade queued as simulated.",
+          });
+        } else {
+          setApproved((a) =>
+            a.map((row) =>
+              row.id === t.id
+                ? {
+                    ...row,
+                    status: "rejected",
+                    mode: "live",
+                    error: `${outcome.error}${outcome.detail ? ` — ${outcome.detail}` : ""}`,
+                  }
+                : row
+            )
+          );
+          setRouteFlash({ kind: "err", text: outcome.error });
+        }
+      } catch (e) {
+        setApproved((a) =>
+          a.map((row) =>
+            row.id === t.id
+              ? {
+                  ...row,
+                  status: "rejected",
+                  error: e instanceof Error ? e.message : String(e),
+                }
+              : row
+          )
+        );
+        setRouteFlash({
+          kind: "err",
+          text: e instanceof Error ? e.message : "Order failed",
+        });
+      } finally {
+        setRoutingId(null);
+      }
+    },
+    [
+      isManager,
+      walletAddress,
+      signAndSendTransaction,
+      referencePriceFor,
+      spec.leverageMin,
+      spec.leverageMax,
+      spec.takeProfitPct,
+      spec.stopLossPct,
+    ]
+  );
 
   function dismissTrade(id: string) {
     setQueue((q) => q.filter((x) => x.id !== id));
   }
 
   function proposeTrade(t: ProposedTrade) {
-    if (spec.autoExecute) {
-      approveTrade(t);
+    if (spec.autoExecute && isManager) {
+      void approveTrade(t);
     } else {
       setQueue((q) => [t, ...q]);
     }
@@ -238,11 +391,54 @@ export default function ManagePoolPage() {
         <div className="space-y-6">
           <LivePositionsPanel poolAddress={address} />
           <PendingWithdrawals poolAddress={address} isManager={isManager} />
+          {routeFlash && (
+            <div
+              className={cn(
+                "rounded-2xl border px-4 py-3 text-sm flex items-start gap-3",
+                routeFlash.kind === "ok"
+                  ? "border-positive/40 bg-positive/10 text-positive"
+                  : routeFlash.kind === "blocked"
+                    ? "border-accent/40 bg-accent/10 text-accent"
+                    : "border-negative/40 bg-negative/10 text-negative"
+              )}
+            >
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium">{routeFlash.text}</div>
+                {routeFlash.explorerUrl && (
+                  <a
+                    href={routeFlash.explorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 mt-1 text-xs underline opacity-80"
+                  >
+                    View on Solana Explorer
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+              <button
+                className="text-xs opacity-70 hover:opacity-100"
+                onClick={() => setRouteFlash(null)}
+              >
+                dismiss
+              </button>
+            </div>
+          )}
           <ProposedTrades
             trades={queue}
-            onApprove={approveTrade}
+            onApprove={(t) => void approveTrade(t)}
             onDismiss={dismissTrade}
             autoExecute={spec.autoExecute}
+            busyId={routingId}
+            disabled={!isManager}
+            disabledReason={
+              !connected
+                ? "Connect wallet to route orders."
+                : !isManager
+                  ? "Manager wallet required to sign Phoenix orders."
+                  : undefined
+            }
           />
           <ApprovedTradesPanel approved={approved} />
           <LiveTradeLog poolAddress={address} />
@@ -290,17 +486,17 @@ function ApprovedTradesPanel({ approved }: { approved: ApprovedTrade[] }) {
     <Card className="space-y-3">
       <h3 className="font-semibold text-sm">Approved Trade Queue</h3>
       <ul className="space-y-2">
-        {approved.slice(0, 6).map((t) => (
+        {approved.slice(0, 8).map((t) => (
           <motion.li
             key={t.id}
             initial={{ opacity: 0, y: -3 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-center justify-between text-sm border-b border-border/40 pb-2 last:border-b-0 last:pb-0"
+            className="flex items-start justify-between gap-3 text-sm border-b border-border/40 pb-2 last:border-b-0 last:pb-0"
           >
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-start gap-2 min-w-0 flex-1">
               <span
                 className={cn(
-                  "inline-flex items-center justify-center h-6 w-6 rounded-full text-[11px] font-bold",
+                  "inline-flex items-center justify-center h-6 w-6 mt-0.5 rounded-full text-[11px] font-bold shrink-0",
                   t.side === "buy"
                     ? "bg-positive/15 text-positive"
                     : "bg-negative/15 text-negative"
@@ -308,31 +504,79 @@ function ApprovedTradesPanel({ approved }: { approved: ApprovedTrade[] }) {
               >
                 {t.side === "buy" ? "B" : "S"}
               </span>
-              <div className="min-w-0">
-                <div className="font-mono text-xs truncate">{t.market}</div>
-                <div className="text-[10px] text-muted">
-                  ${t.sizeUsd.toLocaleString()} · {t.orderType}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-xs">{t.market}</span>
+                  <span className="text-[10px] text-muted">
+                    ${t.sizeUsd.toLocaleString()} · {t.orderType}
+                    {t.quantity ? ` · ${t.quantity.toFixed(4)}` : ""}
+                  </span>
                 </div>
+                {(t.tpTrigger || t.slTrigger) && (
+                  <div className="text-[10px] text-muted mt-0.5">
+                    {t.tpTrigger ? (
+                      <span className="mr-2">
+                        TP <span className="text-positive">${t.tpTrigger.toFixed(t.tpTrigger < 1 ? 6 : 2)}</span>
+                      </span>
+                    ) : null}
+                    {t.slTrigger ? (
+                      <span>
+                        SL <span className="text-negative">${t.slTrigger.toFixed(t.slTrigger < 1 ? 6 : 2)}</span>
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+                {t.error && (
+                  <div className="text-[10px] text-negative mt-0.5 truncate" title={t.error}>
+                    {t.error}
+                  </div>
+                )}
+                {t.explorerUrl && (
+                  <a
+                    href={t.explorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline mt-0.5"
+                  >
+                    {t.signature?.slice(0, 8)}…{t.signature?.slice(-6)}
+                    <ExternalLink className="h-2.5 w-2.5" />
+                  </a>
+                )}
               </div>
             </div>
-            <span
-              className={cn(
-                "text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full",
-                t.status === "filled"
-                  ? "bg-positive/15 text-positive"
-                  : t.status === "rejected"
-                    ? "bg-negative/15 text-negative"
-                    : "bg-accent/15 text-accent"
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <span
+                className={cn(
+                  "text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full",
+                  t.status === "filled"
+                    ? "bg-positive/15 text-positive"
+                    : t.status === "rejected"
+                      ? "bg-negative/15 text-negative"
+                      : t.status === "submitting"
+                        ? "bg-accent/15 text-accent animate-pulse"
+                        : "bg-accent/15 text-accent"
+                )}
+              >
+                {t.status}
+              </span>
+              {t.mode && (
+                <span
+                  className={cn(
+                    "text-[9px] px-1.5 py-0.5 rounded-full",
+                    t.mode === "live"
+                      ? "bg-positive/10 text-positive"
+                      : "bg-surface-3 text-muted"
+                  )}
+                >
+                  {t.mode}
+                </span>
               )}
-            >
-              {t.status}
-            </span>
+            </div>
           </motion.li>
         ))}
       </ul>
       <p className="text-[10px] text-muted">
-        Approved trades are queued for routing through Phoenix Flight once the
-        on-chain vault program is live on mainnet.
+        Live trades route through the Phoenix isolated-order API with TP/SL triggers attached. Simulated entries indicate Phoenix beta access was unavailable for the signing wallet.
       </p>
     </Card>
   );
