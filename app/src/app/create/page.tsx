@@ -14,6 +14,28 @@ const STRATEGIES = [
   "Arbitrage",
 ];
 
+function createMockVaultAddress(manager: string): string {
+  return `Vault${manager.slice(0, 16)}${Date.now()}`.padEnd(44, "1");
+}
+
+function formatApiError(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const maybeFlattened = error as {
+      formErrors?: string[];
+      fieldErrors?: Record<string, string[] | undefined>;
+    };
+    const messages = [
+      ...(maybeFlattened.formErrors ?? []),
+      ...Object.entries(maybeFlattened.fieldErrors ?? {}).flatMap(
+        ([field, errors]) => (errors ?? []).map((message) => `${field}: ${message}`)
+      ),
+    ];
+    if (messages.length > 0) return messages.join("; ");
+  }
+  return "Failed to create pool";
+}
+
 export default function CreatePoolPage() {
   const { connected, address, connect, requireWallet } = useSolanaWallet();
   const [name, setName] = useState("");
@@ -37,7 +59,7 @@ export default function CreatePoolPage() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          address: `Vault${Date.now()}`,
+          address: createMockVaultAddress(address),
           manager: address,
           name,
           description,
@@ -48,7 +70,7 @@ export default function CreatePoolPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Failed to create pool");
+        setError(formatApiError(data.error));
         return;
       }
       alert("Pool metadata saved. Complete on-chain init_vault via your wallet.");

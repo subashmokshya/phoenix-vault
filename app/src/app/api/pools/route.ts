@@ -32,6 +32,18 @@ const createPoolSchema = z.object({
   vaultIndex: z.number().optional(),
 });
 
+function formatZodError(error: z.ZodError): string {
+  const flattened = error.flatten();
+  const fieldErrors = flattened.fieldErrors as Record<string, string[] | undefined>;
+  const messages = [
+    ...flattened.formErrors,
+    ...Object.entries(fieldErrors).flatMap(([field, errors]) =>
+      (errors ?? []).map((message) => `${field}: ${message}`)
+    ),
+  ];
+  return messages.join("; ") || "Invalid pool payload";
+}
+
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -41,7 +53,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const parsed = createPoolSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    return NextResponse.json(
+      { error: formatZodError(parsed.error) },
+      { status: 400 }
+    );
   }
 
   if (!process.env.DATABASE_URL) {

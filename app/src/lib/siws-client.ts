@@ -39,7 +39,10 @@ export async function signInWithWallet(params: {
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      return { ok: false, error: data.error ?? "Sign-in failed" };
+      return {
+        ok: false,
+        error: typeof data.error === "string" ? data.error : "Sign-in failed",
+      };
     }
     return { ok: true };
   } catch (e) {
