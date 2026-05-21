@@ -5,6 +5,15 @@ import { GROQ_TOOLS, SYSTEM_PROMPT, type ToolCall } from "./strategy-tools";
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL = "llama-3.3-70b-versatile";
 
+type GroqToolDef = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
 export type ChatMessage =
   | { role: "user"; content: string }
   | { role: "assistant"; content: string; tool_calls?: GroqToolCall[] }
@@ -34,9 +43,11 @@ export class GroqError extends Error {
 export async function runAssistantTurn(params: {
   apiKey: string;
   history: ChatMessage[];
+  systemPrompt?: string;
+  tools?: GroqToolDef[];
 }): Promise<AssistantTurn> {
   const messages: ChatMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: params.systemPrompt ?? SYSTEM_PROMPT },
     ...params.history,
   ];
 
@@ -49,7 +60,7 @@ export async function runAssistantTurn(params: {
     body: JSON.stringify({
       model: MODEL,
       messages,
-      tools: GROQ_TOOLS,
+      tools: (params.tools as unknown[]) ?? GROQ_TOOLS,
       tool_choice: "auto",
       temperature: 0.4,
       max_tokens: 1024,
