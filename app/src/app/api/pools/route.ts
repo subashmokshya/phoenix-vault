@@ -45,17 +45,20 @@ function formatZodError(error: z.ZodError): string {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const body = await req.json();
   const parsed = createPoolSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: formatZodError(parsed.error) },
       { status: 400 }
+    );
+  }
+
+  const session = await getSession();
+  if (session && session.wallet !== parsed.data.manager) {
+    return NextResponse.json(
+      { error: "Connected wallet does not match pool manager" },
+      { status: 403 }
     );
   }
 

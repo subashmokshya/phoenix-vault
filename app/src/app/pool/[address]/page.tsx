@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { PnlChart } from "@/components/charts/pnl-chart";
 import { Stat } from "@/components/ui/stat";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { getPoolByAddress } from "@/lib/mock-data";
+import { getPoolByAddress, type PoolCard } from "@/lib/mock-data";
+import { getLocalPool } from "@/lib/pools/local-pools";
 import { formatBps, cn } from "@/lib/utils";
 import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 
@@ -16,9 +17,14 @@ const RANGES = ["1d", "7d", "30d", "all"] as const;
 export default function PoolDetailPage() {
   const params = useParams();
   const poolAddress = params.address as string;
-  const pool = getPoolByAddress(poolAddress);
+  const fallbackPool = useMemo(
+    () => getPoolByAddress(poolAddress) ?? getLocalPool(poolAddress),
+    [poolAddress]
+  );
+  const [pool, setPool] = useState<PoolCard | null>(fallbackPool);
+  const [loading, setLoading] = useState(!fallbackPool);
   const [range, setRange] = useState<(typeof RANGES)[number]>("7d");
-  const [navHistory, setNavHistory] = useState(pool?.navHistory ?? []);
+  const [navHistory, setNavHistory] = useState(fallbackPool?.navHistory ?? []);
   const [depositAmount, setDepositAmount] = useState("");
   const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
   const [txStatus, setTxStatus] = useState<string | null>(null);
@@ -40,6 +46,39 @@ export default function PoolDetailPage() {
   }
 
   useEffect(() => {
+    let active = true;
+    setLoading(!fallbackPool);
+    setPool(fallbackPool);
+    setNavHistory(fallbackPool?.navHistory ?? []);
+
+    fetch(`/api/pools/${poolAddress}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error("Pool not found");
+        return r.json();
+      })
+      .then((d) => {
+        if (!active || !d.pool) return;
+        setPool(d.pool);
+        setNavHistory(d.pool.navHistory ?? []);
+      })
+      .catch(() => {
+        if (!active) return;
+        const local = getLocalPool(poolAddress);
+        if (local) {
+          setPool(local);
+          setNavHistory(local.navHistory);
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [poolAddress, fallbackPool]);
+
+  useEffect(() => {
     if (!pool) return;
     fetch(`/api/pools/${poolAddress}/nav?range=${range}`)
       .then((r) => r.json())
@@ -48,6 +87,15 @@ export default function PoolDetailPage() {
       })
       .catch(() => {});
   }, [poolAddress, range, pool]);
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-6xl px-6 py-24 text-center">
+        <h1 className="text-2xl font-semibold mb-2">Loading pool…</h1>
+        <p className="text-muted">Syncing metadata from the registry.</p>
+      </div>
+    );
+  }
 
   if (!pool) {
     return (

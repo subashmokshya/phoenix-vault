@@ -19,6 +19,7 @@ import {
   type PoolDraft,
   type StrategyTag,
 } from "@/lib/ai/strategy-tools";
+import { saveLocalPool } from "@/lib/pools/local-pools";
 import { cn } from "@/lib/utils";
 import { PublicKey } from "@solana/web3.js";
 
@@ -71,19 +72,24 @@ export default function CreatePoolPage() {
       setLaunch({ phase: "saving", result });
 
       const poolAddress = createMockVaultAddress(address);
+      const poolMetadata = {
+        address: poolAddress,
+        manager: address,
+        name: draft.name,
+        description: draft.description,
+        strategyTag: draft.strategyTag,
+        perfFeeBps: Math.round(draft.perfFeePct * 100),
+        mgmtFeeBps: Math.round(draft.mgmtFeePct * 100),
+      };
+
+      saveLocalPool(poolMetadata);
 
       const res = await fetch("/api/pools", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          address: poolAddress,
-          manager: address,
-          name: draft.name,
-          description: draft.description,
-          strategyTag: draft.strategyTag,
-          perfFeeBps: Math.round(draft.perfFeePct * 100),
-          mgmtFeeBps: Math.round(draft.mgmtFeePct * 100),
+          ...poolMetadata,
           phoenixAuthority: address,
         }),
       });

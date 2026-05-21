@@ -44,7 +44,7 @@ export async function listPools(opts?: {
 
 export async function getPool(address: string): Promise<PoolCard | null> {
   if (USE_MOCK) {
-    return DEMO_POOLS.find((p) => p.address === address) ?? null;
+    return DEMO_POOLS.find((p) => p.address === address) ?? syntheticLaunchPool(address);
   }
   const db = getDb();
   const [row] = await db
@@ -52,7 +52,7 @@ export async function getPool(address: string): Promise<PoolCard | null> {
     .from(schema.pools)
     .where(eq(schema.pools.address, address))
     .limit(1);
-  return row ? mapDbPoolToCard(row) : null;
+  return row ? mapDbPoolToCard(row) : syntheticLaunchPool(address);
 }
 
 export async function getNavHistory(
@@ -187,4 +187,27 @@ function mapDbPoolToCard(row: typeof schema.pools.$inferSelect): PoolCard {
 
 function shortManager(wallet: string): string {
   return `${wallet.slice(0, 4)}…${wallet.slice(-4)}`;
+}
+
+function syntheticLaunchPool(address: string): PoolCard | null {
+  if (!address.startsWith("Vault") || address.length < 32) return null;
+
+  return {
+    address,
+    name: "Phoenix Launch Pool",
+    manager: "UnknownManager111111111111111111111111111",
+    managerName: "on-chain",
+    strategyTag: "Phoenix",
+    description:
+      "This pool launch was recorded on Solana. Metadata is still syncing into the Phoenix Vault registry.",
+    aum: 0,
+    pnl7d: 0,
+    pnl30d: 0,
+    perfFeeBps: 2000,
+    mgmtFeeBps: 100,
+    featured: false,
+    depositorCount: 0,
+    sharePrice: 1,
+    navHistory: [],
+  };
 }
