@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { listPools } from "@/lib/pools-service";
 import { getDb, schema } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import {
+  isRegistryConfigured,
+  upsertPool as upsertRegistryPool,
+} from "@/lib/registry/redis";
 import { z } from "zod";
 
 export async function GET(req: NextRequest) {
@@ -71,43 +75,92 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!process.env.DATABASE_URL) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          "Pool registry database is not configured. The on-chain launch succeeded but cannot be saved to the registry.",
-      },
-      { status: 503 }
-    );
-  }
+  const writeTargets: ("registry" | "postgres")[] = [];
 
-  const db = getDb();
-  await db
-    .insert(schema.pools)
-    .values({
-      address: parsed.data.address,
-      manager: parsed.data.manager,
-      name: parsed.data.name,
-      description: parsed.data.description ?? "",
-      strategyTag: parsed.data.strategyTag,
-      perfFeeBps: parsed.data.perfFeeBps,
-      mgmtFeeBps: parsed.data.mgmtFeeBps,
-      phoenixAuthority: parsed.data.phoenixAuthority,
-      vaultIndex: parsed.data.vaultIndex ?? 0,
-    })
-    .onConflictDoUpdate({
-      target: schema.pools.address,
-      set: {
+  if (isRegistryConfigured()) {
+    try {
+      await upsertRegistryPool({
+        address: parsed.data.address,
+        manager: parsed.data.manager,
         name: parsed.data.name,
         description: parsed.data.description ?? "",
         strategyTag: parsed.data.strategyTag,
         perfFeeBps: parsed.data.perfFeeBps,
         mgmtFeeBps: parsed.data.mgmtFeeBps,
         phoenixAuthority: parsed.data.phoenixAuthority,
-        updatedAt: new Date(),
-      },
-    });
+        vaultIndex: parsed.data.vaultIndex ?? 0,
+      });
+      writeTargets.push("registry");
+    } catch (e) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            e instanceof Error
+              ? `Registry write failed: ${e.message}`
+              : "Registry write failed",
+        },
+        { status: 502 }
+      );
+    }
+  }
 
-  return NextResponse.json({ ok: true, pool: parsed.data });
+  if (process.env.DATABASE_URL) {
+    try {
+      const db = getDb();
+      await db
+        .insert(schema.pools)
+        .values({
+          address: parsed.data.address,
+          manager: parsed.data.manager,
+          name: parsed.data.name,
+          description: parsed.data.description ?? "",
+          strategyTag: parsed.data.strategyTag,
+          perfFeeBps: parsed.data.perfFeeBps,
+          mgmtFeeBps: parsed.data.mgmtFeeBps,
+          phoenixAuthority: parsed.data.phoenixAuthority,
+          vaultIndex: parsed.data.vaultIndex ?? 0,
+        })
+        .onConflictDoUpdate({
+          target: schema.pools.address,
+          set: {
+            name: parsed.data.name,
+            description: parsed.data.description ?? "",
+            strategyTag: parsed.data.strategyTag,
+            perfFeeBps: parsed.data.perfFeeBps,
+            mgmtFeeBps: parsed.data.mgmtFeeBps,
+            phoenixAuthority: parsed.data.phoenixAuthority,
+            updatedAt: new Date(),
+          },
+        });
+      writeTargets.push("postgres");
+    } catch (e) {
+      // Postgres failure is non-fatal if the Redis registry write succeeded.
+      if (writeTargets.length === 0) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error:
+              e instanceof Error
+                ? `Database write failed: ${e.message}`
+                : "Database write failed",
+          },
+          { status: 502 }
+        );
+      }
+    }
+  }
+
+  if (writeTargets.length === 0) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "No pool registry is configured. Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (or DATABASE_URL) on the server.",
+      },
+      { status: 503 }
+    );
+  }
+
+  return NextResponse.json({ ok: true, pool: parsed.data, persisted: writeTargets });
 }

@@ -1,8 +1,15 @@
 import { desc, eq, and, gte, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import type { PoolCard } from "./mock-data";
+import {
+  getPoolFromRegistry,
+  isRegistryConfigured,
+  listPoolsFromRegistry,
+  poolToCard,
+} from "./registry/redis";
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
+const HAS_REGISTRY = isRegistryConfigured();
 
 export async function listPools(opts?: {
   sort?: "pnl7d" | "pnl30d" | "aum" | "newest";
@@ -11,8 +18,40 @@ export async function listPools(opts?: {
   manager?: string;
   limit?: number;
 }): Promise<PoolCard[]> {
-  if (!HAS_DB) return [];
+  // Prefer the Upstash registry — it's the source of truth for newly-launched
+  // pools when no Postgres is provisioned. If Postgres is also wired up we
+  // merge both sources, de-duped by address with registry winning.
+  if (HAS_REGISTRY) {
+    const registryPools = (
+      await listPoolsFromRegistry({
+        manager: opts?.manager,
+        strategy: opts?.strategy,
+        featured: opts?.featured,
+        limit: opts?.limit,
+      })
+    ).map(poolToCard);
+    if (!HAS_DB) return registryPools;
 
+    const dbPools = await listFromDb(opts);
+    const seen = new Set(registryPools.map((p) => p.address));
+    const merged = [...registryPools];
+    for (const p of dbPools) {
+      if (!seen.has(p.address)) merged.push(p);
+    }
+    return opts?.limit ? merged.slice(0, opts.limit) : merged;
+  }
+
+  if (!HAS_DB) return [];
+  return listFromDb(opts);
+}
+
+async function listFromDb(opts?: {
+  sort?: "pnl7d" | "pnl30d" | "aum" | "newest";
+  strategy?: string;
+  featured?: boolean;
+  manager?: string;
+  limit?: number;
+}): Promise<PoolCard[]> {
   const db = getDb();
   const filters = [] as ReturnType<typeof eq>[];
   if (opts?.featured) filters.push(eq(schema.pools.featured, true));
@@ -32,6 +71,10 @@ export async function listPools(opts?: {
 }
 
 export async function getPool(address: string): Promise<PoolCard | null> {
+  if (HAS_REGISTRY) {
+    const reg = await getPoolFromRegistry(address);
+    if (reg) return poolToCard(reg);
+  }
   if (!HAS_DB) return null;
   const db = getDb();
   const [row] = await db
