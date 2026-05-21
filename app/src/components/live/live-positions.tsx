@@ -8,12 +8,15 @@ import { formatUsd, cn } from "@/lib/utils";
 
 type Props = {
   poolAddress: string;
+  authorityHint?: string | null;
 };
 
-export function LivePositionsPanel({ poolAddress }: Props) {
-  const { data, loading, lastUpdated } = useLivePositions(poolAddress);
-
-  const isDemo = data?.source === "demo";
+export function LivePositionsPanel({ poolAddress, authorityHint }: Props) {
+  const { data, loading, lastUpdated } = useLivePositions(
+    poolAddress,
+    4000,
+    authorityHint
+  );
 
   return (
     <Card className="p-0 overflow-hidden">
@@ -26,11 +29,6 @@ export function LivePositionsPanel({ poolAddress }: Props) {
             )}
           />
           <h3 className="font-semibold text-sm">Live Positions</h3>
-          {isDemo && (
-            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-accent/15 text-accent">
-              simulated
-            </span>
-          )}
         </div>
         <span className="text-[11px] text-muted tabular-nums">
           {lastUpdated

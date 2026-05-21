@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 import { ShieldCheck, ShieldOff, ExternalLink, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { getPoolByAddress, type PoolCard } from "@/lib/mock-data";
+import type { PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
 import { LivePositionsPanel } from "@/components/live/live-positions";
 import { LiveTradeLog } from "@/components/live/live-trade-log";
@@ -42,7 +42,7 @@ export default function ManagePoolPage() {
   const params = useParams();
   const address = params.address as string;
   const fallback = useMemo(
-    () => getPoolByAddress(address) ?? getLocalPool(address),
+    () => getLocalPool(address),
     [address]
   );
   const [pool, setPool] = useState<PoolCard | null>(fallback);
@@ -51,11 +51,13 @@ export default function ManagePoolPage() {
   const [queue, setQueue] = useState<ProposedTrade[]>([]);
   const [approved, setApproved] = useState<ApprovedTrade[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  const [marketPrices, setMarketPrices] = useState<Record<string, number>>({});
 
   const { connected, address: walletAddress } = useSolanaWallet();
   const { signAndSendTransaction } = useWallet();
-  const positions = useLivePositions(address);
-  const trades = useLiveTrades(address);
+  const phoenixAuthority = pool?.phoenixAuthority ?? pool?.manager ?? null;
+  const positions = useLivePositions(address, 4000, phoenixAuthority);
+  const trades = useLiveTrades(address, 4000, 25, phoenixAuthority);
   const [routingId, setRoutingId] = useState<string | null>(null);
   const [routeFlash, setRouteFlash] = useState<{
     kind: "ok" | "err" | "blocked";
@@ -74,18 +76,37 @@ export default function ManagePoolPage() {
       if (livePos?.markPrice) return livePos.markPrice;
       const lastTrade = (trades.data ?? []).find((t) => t.market === market);
       if (lastTrade?.price) return lastTrade.price;
-      // Conservative defaults for common Phoenix markets so demo flow still works.
-      const defaults: Record<string, number> = {
-        "SOL-PERP": 168,
-        "BTC-PERP": 96000,
-        "ETH-PERP": 3400,
-        "BONK-PERP": 0.000022,
-        "JUP-PERP": 0.85,
-      };
-      return defaults[market] ?? 100;
+      return marketPrices[market] ?? 0;
     },
-    [positions.data, trades.data]
+    [positions.data, trades.data, marketPrices]
   );
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const r = await fetch("/api/phoenix/markets", { cache: "no-store" });
+        if (!r.ok) return;
+        const json = (await r.json()) as {
+          markets?: { symbol: string; markPrice: number }[];
+        };
+        if (!active) return;
+        const next: Record<string, number> = {};
+        for (const m of json.markets ?? []) {
+          if (m.markPrice > 0) next[m.symbol] = m.markPrice;
+        }
+        setMarketPrices(next);
+      } catch {
+        // best-effort
+      }
+    }
+    load();
+    const id = setInterval(load, 15000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -139,8 +160,14 @@ export default function ManagePoolPage() {
       setRoutingId(t.id);
       setRouteFlash(null);
 
-      // Optimistically move the trade out of the proposal queue into approved/submitting.
       const referencePrice = referencePriceFor(t.market);
+      if (!referencePrice) {
+        setRouteFlash({
+          kind: "err",
+          text: `Reference price for ${t.market} unavailable yet — wait for the markets snapshot and retry.`,
+        });
+        return;
+      }
       const leverage = Math.max(1, Math.round((spec.leverageMin + spec.leverageMax) / 2));
       const pendingEntry: ApprovedTrade = {
         ...t,
@@ -192,25 +219,10 @@ export default function ManagePoolPage() {
             sig: outcome.signature,
             explorerUrl: outcome.explorerUrl,
           });
-        } else if (outcome.mode === "blocked") {
-          // Phoenix beta gating: simulate but keep the user informed.
-          setApproved((a) =>
-            a.map((row) =>
-              row.id === t.id
-                ? {
-                    ...row,
-                    status: "submitted",
-                    mode: "simulated",
-                    error: outcome.error,
-                  }
-                : row
-            )
-          );
-          setRouteFlash({
-            kind: "blocked",
-            text: "Phoenix beta access required for live routing — trade queued as simulated.",
-          });
         } else {
+          const detail = outcome.detail
+            ? ` — ${outcome.detail}`
+            : "";
           setApproved((a) =>
             a.map((row) =>
               row.id === t.id
@@ -218,12 +230,18 @@ export default function ManagePoolPage() {
                     ...row,
                     status: "rejected",
                     mode: "live",
-                    error: `${outcome.error}${outcome.detail ? ` — ${outcome.detail}` : ""}`,
+                    error: `${outcome.error}${detail}`,
                   }
                 : row
             )
           );
-          setRouteFlash({ kind: "err", text: outcome.error });
+          const blocked = outcome.kind === "blocked";
+          setRouteFlash({
+            kind: blocked ? "blocked" : "err",
+            text: blocked
+              ? `Phoenix beta access required for this wallet — order not routed.${detail}`
+              : outcome.error,
+          });
         }
       } catch (e) {
         setApproved((a) =>

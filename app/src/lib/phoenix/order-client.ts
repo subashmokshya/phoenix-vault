@@ -73,7 +73,7 @@ export type PhoenixOrderOutcome =
     }
   | {
       ok: false;
-      mode: "live" | "blocked";
+      kind: "blocked" | "rejected";
       error: string;
       detail?: string;
     };
@@ -113,7 +113,7 @@ export async function placePhoenixOrder(
   } catch (e) {
     return {
       ok: false,
-      mode: "blocked",
+      kind: "rejected",
       error: "Network error reaching Phoenix builder",
       detail: e instanceof Error ? e.message : String(e),
     };
@@ -128,7 +128,7 @@ export async function placePhoenixOrder(
       );
     return {
       ok: false,
-      mode: blocked ? "blocked" : "live",
+      kind: blocked ? "blocked" : "rejected",
       error: build.error,
       detail: build.detail,
     };
@@ -178,7 +178,7 @@ export async function placePhoenixOrder(
   } catch (e) {
     return {
       ok: false,
-      mode: "live",
+      kind: "rejected",
       error: "Order sign/send failed",
       detail: e instanceof Error ? e.message : String(e),
     };

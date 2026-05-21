@@ -14,22 +14,31 @@ export async function GET(req: NextRequest) {
     | null;
   const strategy = searchParams.get("strategy") ?? undefined;
   const featured = searchParams.get("featured") === "true";
+  const manager = searchParams.get("manager") ?? undefined;
   const limit = parseInt(searchParams.get("limit") ?? "50", 10);
 
-  const pools = await listPools({ sort: sort ?? undefined, strategy, featured, limit });
+  const pools = await listPools({
+    sort: sort ?? undefined,
+    strategy,
+    featured,
+    manager,
+    limit,
+  });
   return NextResponse.json({ pools });
 }
 
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
 const createPoolSchema = z.object({
-  address: z.string().min(32),
-  manager: z.string().min(32),
+  address: z.string().regex(BASE58, "address must be a Solana base58 pubkey"),
+  manager: z.string().regex(BASE58, "manager must be a Solana base58 pubkey"),
   name: z.string().min(1).max(64),
   description: z.string().max(500).optional(),
   strategyTag: z.string().min(1),
   perfFeeBps: z.number().min(0).max(5000),
   mgmtFeeBps: z.number().min(0).max(1000),
-  phoenixAuthority: z.string().optional(),
-  vaultIndex: z.number().optional(),
+  phoenixAuthority: z.string().regex(BASE58).optional(),
+  vaultIndex: z.number().int().min(0).max(255).optional(),
 });
 
 function formatZodError(error: z.ZodError): string {
@@ -67,17 +76,31 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getDb();
-  await db.insert(schema.pools).values({
-    address: parsed.data.address,
-    manager: parsed.data.manager,
-    name: parsed.data.name,
-    description: parsed.data.description ?? "",
-    strategyTag: parsed.data.strategyTag,
-    perfFeeBps: parsed.data.perfFeeBps,
-    mgmtFeeBps: parsed.data.mgmtFeeBps,
-    phoenixAuthority: parsed.data.phoenixAuthority,
-    vaultIndex: parsed.data.vaultIndex ?? 0,
-  });
+  await db
+    .insert(schema.pools)
+    .values({
+      address: parsed.data.address,
+      manager: parsed.data.manager,
+      name: parsed.data.name,
+      description: parsed.data.description ?? "",
+      strategyTag: parsed.data.strategyTag,
+      perfFeeBps: parsed.data.perfFeeBps,
+      mgmtFeeBps: parsed.data.mgmtFeeBps,
+      phoenixAuthority: parsed.data.phoenixAuthority,
+      vaultIndex: parsed.data.vaultIndex ?? 0,
+    })
+    .onConflictDoUpdate({
+      target: schema.pools.address,
+      set: {
+        name: parsed.data.name,
+        description: parsed.data.description ?? "",
+        strategyTag: parsed.data.strategyTag,
+        perfFeeBps: parsed.data.perfFeeBps,
+        mgmtFeeBps: parsed.data.mgmtFeeBps,
+        phoenixAuthority: parsed.data.phoenixAuthority,
+        updatedAt: new Date(),
+      },
+    });
 
   return NextResponse.json({ ok: true, pool: parsed.data });
 }

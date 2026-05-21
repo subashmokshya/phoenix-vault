@@ -1,70 +1,56 @@
 import { desc, eq, and, gte, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
-import {
-  DEMO_POOLS,
-  getFeaturedPools,
-  type PoolCard,
-} from "./mock-data";
+import type { PoolCard } from "./mock-data";
 
-const USE_MOCK = !process.env.DATABASE_URL;
+const HAS_DB = Boolean(process.env.DATABASE_URL);
 
 export async function listPools(opts?: {
   sort?: "pnl7d" | "pnl30d" | "aum" | "newest";
   strategy?: string;
   featured?: boolean;
+  manager?: string;
   limit?: number;
 }): Promise<PoolCard[]> {
-  if (USE_MOCK) {
-    let pools = [...DEMO_POOLS];
-    if (opts?.featured) pools = pools.filter((p) => p.featured);
-    if (opts?.strategy)
-      pools = pools.filter(
-        (p) => p.strategyTag.toLowerCase() === opts.strategy!.toLowerCase()
-      );
-    switch (opts?.sort) {
-      case "pnl7d":
-        pools.sort((a, b) => b.pnl7d - a.pnl7d);
-        break;
-      case "pnl30d":
-        pools.sort((a, b) => b.pnl30d - a.pnl30d);
-        break;
-      case "aum":
-        pools.sort((a, b) => b.aum - a.aum);
-        break;
-      default:
-        break;
-    }
-    return pools.slice(0, opts?.limit ?? 50);
-  }
+  if (!HAS_DB) return [];
 
   const db = getDb();
-  const rows = await db.select().from(schema.pools).limit(opts?.limit ?? 50);
+  const filters = [] as ReturnType<typeof eq>[];
+  if (opts?.featured) filters.push(eq(schema.pools.featured, true));
+  if (opts?.strategy) filters.push(eq(schema.pools.strategyTag, opts.strategy));
+  if (opts?.manager) filters.push(eq(schema.pools.manager, opts.manager));
+
+  const baseQuery = db.select().from(schema.pools);
+  const filtered = filters.length
+    ? baseQuery.where(and(...filters))
+    : baseQuery;
+  const ordered =
+    opts?.sort === "newest"
+      ? filtered.orderBy(desc(schema.pools.createdAt))
+      : filtered.orderBy(desc(schema.pools.createdAt));
+  const rows = await ordered.limit(opts?.limit ?? 50);
   return rows.map(mapDbPoolToCard);
 }
 
 export async function getPool(address: string): Promise<PoolCard | null> {
-  if (USE_MOCK) {
-    return DEMO_POOLS.find((p) => p.address === address) ?? syntheticLaunchPool(address);
-  }
+  if (!HAS_DB) return null;
   const db = getDb();
   const [row] = await db
     .select()
     .from(schema.pools)
     .where(eq(schema.pools.address, address))
     .limit(1);
-  return row ? mapDbPoolToCard(row) : syntheticLaunchPool(address);
+  return row ? mapDbPoolToCard(row) : null;
+}
+
+export async function getPoolsByManager(manager: string): Promise<PoolCard[]> {
+  return listPools({ manager, limit: 100 });
 }
 
 export async function getNavHistory(
   address: string,
   range: "1d" | "7d" | "30d" | "all"
 ): Promise<{ ts: string; nav: number }[]> {
-  if (USE_MOCK) {
-    const pool = DEMO_POOLS.find((p) => p.address === address);
-    if (!pool) return [];
-    const days = range === "1d" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 90;
-    return pool.navHistory.slice(-days);
-  }
+  if (!HAS_DB) return [];
 
   const db = getDb();
   const since = new Date();
@@ -94,31 +80,7 @@ export async function getLeaderboard(
   metric: "pnl7d" | "pnl30d" | "aum" | "sharpe7d",
   limit = 20
 ) {
-  if (USE_MOCK) {
-    const pools = [...DEMO_POOLS];
-    const key =
-      metric === "pnl7d"
-        ? "pnl7d"
-        : metric === "pnl30d"
-          ? "pnl30d"
-          : metric === "aum"
-            ? "aum"
-            : "pnl7d";
-    return pools
-      .sort((a, b) => (b[key as keyof PoolCard] as number) - (a[key as keyof PoolCard] as number))
-      .slice(0, limit)
-      .map((p, i) => ({
-        rank: i + 1,
-        poolAddress: p.address,
-        poolName: p.name,
-        manager: p.manager,
-        managerName: p.managerName,
-        value: p[key as keyof PoolCard] as number,
-        pnl7d: p.pnl7d,
-        pnl30d: p.pnl30d,
-        aum: p.aum,
-      }));
-  }
+  if (!HAS_DB) return [];
 
   const db = getDb();
   return db
@@ -130,7 +92,7 @@ export async function getLeaderboard(
 }
 
 export async function recomputeFeatured() {
-  if (USE_MOCK) return getFeaturedPools();
+  if (!HAS_DB) return [];
   const db = getDb();
   const MIN_AUM = 100_000;
 
@@ -188,27 +150,4 @@ function mapDbPoolToCard(row: typeof schema.pools.$inferSelect): PoolCard {
 
 function shortManager(wallet: string): string {
   return `${wallet.slice(0, 4)}…${wallet.slice(-4)}`;
-}
-
-function syntheticLaunchPool(address: string): PoolCard | null {
-  if (!address.startsWith("Vault") || address.length < 32) return null;
-
-  return {
-    address,
-    name: "Phoenix Launch Pool",
-    manager: "UnknownManager111111111111111111111111111",
-    managerName: "on-chain",
-    strategyTag: "Phoenix",
-    description:
-      "This pool launch was recorded on Solana. Metadata is still syncing into the Phoenix Vault registry.",
-    aum: 0,
-    pnl7d: 0,
-    pnl30d: 0,
-    perfFeeBps: 2000,
-    mgmtFeeBps: 100,
-    featured: false,
-    depositorCount: 0,
-    sharePrice: 1,
-    navHistory: [],
-  };
 }

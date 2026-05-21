@@ -18,10 +18,7 @@ import {
 import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import {
-  DEMO_POOLS,
-  type PoolCard,
-} from "@/lib/mock-data";
+import type { PoolCard } from "@/lib/mock-data";
 import { getLocalPoolsByManager } from "@/lib/pools/local-pools";
 import { loadQueue, loadSpec } from "@/lib/strategy/store";
 import {
@@ -94,32 +91,30 @@ export default function PortfolioPage() {
         Array.from(grouped.entries())
           .filter(([, v]) => v > 0)
           .map(async ([poolAddress, value]) => {
-            const local =
-              DEMO_POOLS.find((p) => p.address === poolAddress) ?? null;
-            const remote: PoolCard | null = local
-              ? null
-              : await fetch(`/api/pools/${poolAddress}`)
-                  .then((r) => (r.ok ? r.json() : null))
-                  .then((d) => (d?.pool as PoolCard | null) ?? null)
-                  .catch(() => null);
-            const pool =
-              local ?? remote ?? {
-                address: poolAddress,
-                name: "Phoenix Pool",
-                manager: address!,
-                managerName: shortAddress(address!, 4),
-                strategyTag: "Phoenix",
-                description: "",
-                aum: 0,
-                pnl7d: 0,
-                pnl30d: 0,
-                perfFeeBps: 2000,
-                mgmtFeeBps: 100,
-                featured: false,
-                depositorCount: 0,
-                sharePrice: 1,
-                navHistory: [],
-              };
+            const remote: PoolCard | null = await fetch(
+              `/api/pools/${poolAddress}`,
+              { cache: "no-store" }
+            )
+              .then((r) => (r.ok ? r.json() : null))
+              .then((d) => (d?.pool as PoolCard | null) ?? null)
+              .catch(() => null);
+            const pool: PoolCard = remote ?? {
+              address: poolAddress,
+              name: "Phoenix Pool",
+              manager: address!,
+              managerName: shortAddress(address!, 4),
+              strategyTag: "Phoenix",
+              description: "",
+              aum: 0,
+              pnl7d: 0,
+              pnl30d: 0,
+              perfFeeBps: 2000,
+              mgmtFeeBps: 100,
+              featured: false,
+              depositorCount: 0,
+              sharePrice: 1,
+              navHistory: [],
+            };
             return {
               pool,
               shares: value,
@@ -513,7 +508,6 @@ function ManagedPoolCard({ item }: { item: ManagedPool }) {
   const upnl = snapshot?.unrealizedPnl ?? 0;
   const collateral = snapshot?.collateral ?? 0;
   const positions = snapshot?.positions ?? [];
-  const isDemo = snapshot?.source === "demo";
 
   return (
     <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
@@ -538,11 +532,6 @@ function ManagedPoolCard({ item }: { item: ManagedPool }) {
               {autoExecute && (
                 <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-accent/15 text-accent">
                   auto
-                </span>
-              )}
-              {isDemo && (
-                <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-surface-3 text-muted">
-                  simulated
                 </span>
               )}
             </div>

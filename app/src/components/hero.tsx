@@ -21,8 +21,8 @@ export function Hero() {
           <span className="text-accent">perp traders</span>
         </h1>
         <p className="text-lg text-muted max-w-xl mx-auto mb-8 leading-relaxed">
-          Deposit USDC into curated vaults. Top managers trade Phoenix perpetuals
-          on your behalf. Transparent fees. Non-custodial.
+          Deposit USDC into Phoenix vaults. AI co-pilots help managers design
+          strategies and route real perp orders with TP/SL on Solana.
         </p>
         <div className="flex gap-4 justify-center flex-wrap">
           <Link href="/explore">

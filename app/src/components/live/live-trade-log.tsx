@@ -9,10 +9,16 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   poolAddress: string;
+  authorityHint?: string | null;
 };
 
-export function LiveTradeLog({ poolAddress }: Props) {
-  const { data, loading, lastUpdated } = useLiveTrades(poolAddress, 4000, 30);
+export function LiveTradeLog({ poolAddress, authorityHint }: Props) {
+  const { data, loading, lastUpdated } = useLiveTrades(
+    poolAddress,
+    4000,
+    30,
+    authorityHint
+  );
   const [highlighted, setHighlighted] = useState<Set<string>>(new Set());
   const seenRef = useRef<Set<string>>(new Set());
 

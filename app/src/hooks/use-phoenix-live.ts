@@ -15,7 +15,7 @@ export type LivePositionDTO = {
 
 export type LiveSnapshotDTO = {
   authority: string;
-  source: "phoenix" | "demo";
+  source: "phoenix";
   asOf: number;
   collateral: number;
   unrealizedPnl: number;
@@ -53,9 +53,14 @@ function useInterval(callback: () => void, ms: number) {
   }, [ms]);
 }
 
+function authorityParam(authority: string | null | undefined): string {
+  return authority ? `?authority=${encodeURIComponent(authority)}` : "";
+}
+
 export function useLivePositions(
   poolAddress: string | null,
-  intervalMs = 4000
+  intervalMs = 4000,
+  authorityHint?: string | null
 ): State<LiveSnapshotDTO> & { refresh: () => void } {
   const [state, setState] = useState<State<LiveSnapshotDTO>>({
     data: null,
@@ -67,9 +72,10 @@ export function useLivePositions(
   const load = async () => {
     if (!poolAddress) return;
     try {
-      const r = await fetch(`/api/phoenix/positions/${poolAddress}`, {
-        cache: "no-store",
-      });
+      const r = await fetch(
+        `/api/phoenix/positions/${poolAddress}${authorityParam(authorityHint)}`,
+        { cache: "no-store" }
+      );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const json = await r.json();
       setState({
@@ -92,7 +98,7 @@ export function useLivePositions(
     setState((s) => ({ ...s, loading: true }));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [poolAddress]);
+  }, [poolAddress, authorityHint]);
 
   useInterval(() => {
     load();
@@ -104,7 +110,8 @@ export function useLivePositions(
 export function useLiveTrades(
   poolAddress: string | null,
   intervalMs = 4000,
-  limit = 25
+  limit = 25,
+  authorityHint?: string | null
 ): State<LiveTradeDTO[]> & { refresh: () => void } {
   const [state, setState] = useState<State<LiveTradeDTO[]>>({
     data: null,
@@ -117,8 +124,10 @@ export function useLiveTrades(
   const load = async () => {
     if (!poolAddress) return;
     try {
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (authorityHint) params.set("authority", authorityHint);
       const r = await fetch(
-        `/api/phoenix/trades/${poolAddress}?limit=${limit}`,
+        `/api/phoenix/trades/${poolAddress}?${params.toString()}`,
         { cache: "no-store" }
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -146,7 +155,7 @@ export function useLiveTrades(
     setState((s) => ({ ...s, loading: true }));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [poolAddress]);
+  }, [poolAddress, authorityHint]);
 
   useInterval(() => {
     load();

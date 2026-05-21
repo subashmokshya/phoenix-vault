@@ -19,7 +19,8 @@ import {
   type PoolDraft,
   type StrategyTag,
 } from "@/lib/ai/strategy-tools";
-import { saveLocalPool } from "@/lib/pools/local-pools";
+import { saveLocalPool, getLocalPoolsByManager } from "@/lib/pools/local-pools";
+import { nextVaultIndex } from "@/lib/vaults/address";
 import { cn } from "@/lib/utils";
 import { PublicKey } from "@solana/web3.js";
 
@@ -31,8 +32,28 @@ type LaunchState =
   | { phase: "done"; result: LaunchResult; poolAddress: string }
   | { phase: "error"; message: string };
 
-function createMockVaultAddress(manager: string): string {
-  return `Vault${manager.slice(0, 16)}${Date.now()}`.padEnd(44, "1");
+async function pickVaultAddress(manager: PublicKey): Promise<{
+  address: string;
+  vaultIndex: number;
+}> {
+  // Combine known pool addresses from the DB (manager-filtered) and local
+  // launches so we don't reuse an index.
+  const local = getLocalPoolsByManager(manager.toBase58()).map((p) => p.address);
+  let remote: string[] = [];
+  try {
+    const r = await fetch(
+      `/api/pools?manager=${manager.toBase58()}&limit=300`,
+      { cache: "no-store" }
+    );
+    if (r.ok) {
+      const json = (await r.json()) as { pools?: { address: string }[] };
+      remote = (json.pools ?? []).map((p) => p.address);
+    }
+  } catch {
+    // best-effort — local cache still prevents most collisions
+  }
+  const { address, vaultIndex } = nextVaultIndex(manager, [...local, ...remote]);
+  return { address: address.toBase58(), vaultIndex };
 }
 
 export default function CreatePoolPage() {
@@ -55,8 +76,12 @@ export default function CreatePoolPage() {
     setLaunch({ phase: "signing" });
 
     try {
+      const managerPubkey = new PublicKey(address);
+      const { address: poolAddress, vaultIndex } =
+        await pickVaultAddress(managerPubkey);
+
       const result = await buildAndSendLaunchTx({
-        payer: new PublicKey(address),
+        payer: managerPubkey,
         signAndSend: signAndSendTransaction,
         payload: {
           app: "phoenix-vault",
@@ -71,7 +96,6 @@ export default function CreatePoolPage() {
 
       setLaunch({ phase: "saving", result });
 
-      const poolAddress = createMockVaultAddress(address);
       const poolMetadata = {
         address: poolAddress,
         manager: address,
@@ -84,19 +108,24 @@ export default function CreatePoolPage() {
 
       saveLocalPool(poolMetadata);
 
-      const res = await fetch("/api/pools", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          ...poolMetadata,
-          phoenixAuthority: address,
-        }),
-      });
-
-      // Even if backend save fails (e.g., no DB), the on-chain launch succeeded.
-      if (!res.ok) {
-        console.warn("Metadata save failed, but on-chain launch succeeded.");
+      // Persist to the registry so other depositors can discover the pool.
+      try {
+        const res = await fetch("/api/pools", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            ...poolMetadata,
+            phoenixAuthority: address,
+            vaultIndex,
+          }),
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          console.warn("Pool metadata save failed:", err.error ?? res.statusText);
+        }
+      } catch (e) {
+        console.warn("Pool metadata save threw:", e);
       }
 
       setLaunch({ phase: "done", result, poolAddress });

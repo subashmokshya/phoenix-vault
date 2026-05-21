@@ -1,7 +1,6 @@
 import "server-only";
 
 import { PhoenixHttpClient } from "@ellipsis-labs/rise";
-import type { PoolCard } from "@/lib/mock-data";
 
 const PHOENIX_API_URL =
   process.env.NEXT_PUBLIC_PHOENIX_API_URL ?? "https://perp-api.phoenix.trade";
@@ -37,7 +36,7 @@ export type LiveTrade = {
 
 export type LiveSnapshot = {
   authority: string;
-  source: "phoenix" | "demo";
+  source: "phoenix";
   asOf: number;
   collateral: number;
   unrealizedPnl: number;
@@ -67,7 +66,16 @@ export async function fetchLivePositions(
       .getTraderState(authority, { pdaIndex: 0 } as never);
 
     const trader = state.traders?.[0];
-    if (!trader) return null;
+    if (!trader) {
+      return {
+        authority,
+        source: "phoenix",
+        asOf: Date.now(),
+        collateral: 0,
+        unrealizedPnl: 0,
+        positions: [],
+      };
+    }
 
     const positions: LivePosition[] = (trader.positions ?? []).map((p) => {
       const baseQty = toNumber((p as { baseLots?: unknown }).baseLots);
@@ -143,106 +151,13 @@ export async function fetchLiveTrades(
   }
 }
 
-// ---------- Demo fallback (so freshly launched pools look alive) ----------
-
-const MARKETS_BY_TAG: Record<string, string[]> = {
-  Momentum: ["SOL-PERP", "BTC-PERP"],
-  "Market Neutral": ["SOL-PERP", "BTC-PERP", "ETH-PERP"],
-  Volatility: ["SOL-PERP", "BONK-PERP"],
-  Macro: ["BTC-PERP", "ETH-PERP"],
-  HFT: ["SOL-PERP"],
-  Arbitrage: ["BTC-PERP", "ETH-PERP", "SOL-PERP"],
-  Phoenix: ["SOL-PERP", "BTC-PERP"],
-};
-
-function hashSeed(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function rng(seed: number) {
-  let s = seed || 1;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0xffffffff;
-  };
-}
-
-const BASE_PRICE: Record<string, number> = {
-  "SOL-PERP": 184.32,
-  "BTC-PERP": 96412.5,
-  "ETH-PERP": 3318.4,
-  "BONK-PERP": 0.0000241,
-};
-
-export function demoSnapshot(pool: PoolCard): LiveSnapshot {
-  const markets = MARKETS_BY_TAG[pool.strategyTag] ?? ["SOL-PERP"];
-  const r = rng(hashSeed(pool.address));
-  const now = Date.now();
-  const drift = Math.sin(now / 60000 + hashSeed(pool.address) / 1e9);
-
-  const positions: LivePosition[] = markets.map((m, i) => {
-    const base = BASE_PRICE[m] ?? 100;
-    const mark = base * (1 + (r() - 0.5) * 0.01 + drift * 0.002);
-    const entry = base * (1 + (r() - 0.5) * 0.02);
-    const sideSign = pool.strategyTag === "Market Neutral" && i % 2 === 1 ? -1 : 1;
-    const qty = (5 + r() * 95) * (m === "BTC-PERP" ? 0.05 : 1);
-    const notional = qty * mark;
-    const upnl = sideSign * (mark - entry) * qty;
-    return {
-      market: m,
-      side: sideSign > 0 ? "long" : "short",
-      baseQty: qty,
-      entryPrice: entry,
-      markPrice: mark,
-      unrealizedPnl: upnl,
-      leverage: 2 + r() * 3,
-      notional,
-    };
-  });
-
+export function emptySnapshot(authority: string): LiveSnapshot {
   return {
-    authority: pool.phoenixAuthority ?? pool.manager,
-    source: "demo",
-    asOf: now,
-    collateral: pool.aum > 0 ? pool.aum * 0.6 : 25_000 + r() * 75_000,
-    unrealizedPnl: positions.reduce((s, p) => s + p.unrealizedPnl, 0),
-    positions,
+    authority,
+    source: "phoenix",
+    asOf: Date.now(),
+    collateral: 0,
+    unrealizedPnl: 0,
+    positions: [],
   };
-}
-
-export function demoTrades(pool: PoolCard, limit = 25): LiveTrade[] {
-  const markets = MARKETS_BY_TAG[pool.strategyTag] ?? ["SOL-PERP"];
-  const r = rng(hashSeed(pool.address) ^ 0xa5a5a5);
-  const now = Date.now();
-  const trades: LiveTrade[] = [];
-
-  for (let i = 0; i < limit; i++) {
-    const market = markets[Math.floor(r() * markets.length)]!;
-    const base = BASE_PRICE[market] ?? 100;
-    const price = base * (1 + (r() - 0.5) * 0.01);
-    const qty = (1 + r() * 50) * (market === "BTC-PERP" ? 0.02 : 1);
-    const side: "buy" | "sell" = r() > 0.48 ? "buy" : "sell";
-    // Cluster trades into the recent past, more density near now
-    const ageMs = Math.pow(r(), 2.2) * 6 * 60 * 60 * 1000;
-    trades.push({
-      id: `demo-${pool.address}-${i}`,
-      ts: now - ageMs,
-      market,
-      side,
-      price,
-      qty,
-      notional: qty * price,
-      liquidity: r() > 0.5 ? "taker" : "maker",
-      signature: null,
-      realizedPnl: (r() - 0.5) * 20 * qty,
-      type: r() > 0.7 ? "market" : "limit",
-    });
-  }
-
-  return trades.sort((a, b) => b.ts - a.ts);
 }

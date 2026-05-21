@@ -6,10 +6,11 @@ import Link from "next/link";
 import { PnlChart } from "@/components/charts/pnl-chart";
 import { Stat } from "@/components/ui/stat";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { LivePositionsPanel } from "@/components/live/live-positions";
 import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { DepositWidget } from "@/components/deposit/deposit-widget";
-import { getPoolByAddress, type PoolCard } from "@/lib/mock-data";
+import type { PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
 import { formatBps, cn } from "@/lib/utils";
 
@@ -19,11 +20,12 @@ export default function PoolDetailPage() {
   const params = useParams();
   const poolAddress = params.address as string;
   const fallbackPool = useMemo(
-    () => getPoolByAddress(poolAddress) ?? getLocalPool(poolAddress),
+    () => getLocalPool(poolAddress),
     [poolAddress]
   );
   const [pool, setPool] = useState<PoolCard | null>(fallbackPool);
   const [loading, setLoading] = useState(!fallbackPool);
+  const [notFound, setNotFound] = useState(false);
   const [range, setRange] = useState<(typeof RANGES)[number]>("7d");
   const [navHistory, setNavHistory] = useState(fallbackPool?.navHistory ?? []);
 
@@ -32,25 +34,23 @@ export default function PoolDetailPage() {
     setLoading(!fallbackPool);
     setPool(fallbackPool);
     setNavHistory(fallbackPool?.navHistory ?? []);
+    setNotFound(false);
 
-    fetch(`/api/pools/${poolAddress}`)
+    fetch(`/api/pools/${poolAddress}`, { cache: "no-store" })
       .then(async (r) => {
-        if (!r.ok) throw new Error("Pool not found");
+        if (!r.ok) {
+          if (r.status === 404) setNotFound(!fallbackPool);
+          return null;
+        }
         return r.json();
       })
       .then((d) => {
-        if (!active || !d.pool) return;
+        if (!active || !d?.pool) return;
         setPool(d.pool);
         setNavHistory(d.pool.navHistory ?? []);
+        setNotFound(false);
       })
-      .catch(() => {
-        if (!active) return;
-        const local = getLocalPool(poolAddress);
-        if (local) {
-          setPool(local);
-          setNavHistory(local.navHistory);
-        }
-      })
+      .catch(() => {})
       .finally(() => {
         if (active) setLoading(false);
       });
@@ -62,10 +62,10 @@ export default function PoolDetailPage() {
 
   useEffect(() => {
     if (!pool) return;
-    fetch(`/api/pools/${poolAddress}/nav?range=${range}`)
-      .then((r) => r.json())
+    fetch(`/api/pools/${poolAddress}/nav?range=${range}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (d.history?.length) setNavHistory(d.history);
+        if (d?.history) setNavHistory(d.history);
       })
       .catch(() => {});
   }, [poolAddress, range, pool]);
@@ -79,18 +79,28 @@ export default function PoolDetailPage() {
     );
   }
 
-  if (!pool) {
+  if (!pool || notFound) {
     return (
-      <div className="mx-auto max-w-6xl px-6 py-24 text-center">
-        <h1 className="text-2xl font-semibold mb-4">Pool not found</h1>
-        <Link href="/explore" className="text-accent hover:underline">
-          Back to Explore
-        </Link>
+      <div className="mx-auto max-w-6xl px-6 py-24 text-center space-y-4">
+        <h1 className="text-2xl font-semibold">Pool not found</h1>
+        <p className="text-sm text-muted max-w-md mx-auto">
+          No pool with this address is registered. Pools that were launched
+          locally only appear on the device that launched them.
+        </p>
+        <div className="flex gap-2 justify-center">
+          <Link href="/explore">
+            <Button variant="secondary">Back to Explore</Button>
+          </Link>
+          <Link href="/create">
+            <Button>Launch a Pool</Button>
+          </Link>
+        </div>
       </div>
     );
   }
 
   const positive = pool.pnl7d >= 0;
+  const phoenixAuthority = pool.phoenixAuthority ?? pool.manager;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-12">
@@ -107,14 +117,16 @@ export default function PoolDetailPage() {
               by{" "}
               <Link
                 href={`/managers/${pool.manager}`}
-                className="text-accent hover:underline"
+                className="text-accent hover:underline font-mono"
               >
                 {pool.managerName}
               </Link>
             </p>
-            <p className="text-muted mt-4 leading-relaxed max-w-2xl">
-              {pool.description}
-            </p>
+            {pool.description && (
+              <p className="text-muted mt-4 leading-relaxed max-w-2xl">
+                {pool.description}
+              </p>
+            )}
           </div>
 
           <div className="flex gap-2 mb-4">
@@ -135,19 +147,41 @@ export default function PoolDetailPage() {
           </div>
 
           <Card className="mb-8 p-4">
-            <PnlChart data={navHistory} positive={positive} />
+            {navHistory.length > 0 ? (
+              <PnlChart data={navHistory} positive={positive} />
+            ) : (
+              <div className="h-40 flex items-center justify-center text-sm text-muted">
+                NAV history will appear here once the daily snapshot runs.
+              </div>
+            )}
           </Card>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             <Stat label="AUM" value={pool.aum} suffix="$" />
-            <Stat label="7D PnL" value={pool.pnl7d} suffix="%" change={pool.pnl7d} />
-            <Stat label="30D PnL" value={pool.pnl30d} suffix="%" change={pool.pnl30d} />
+            <Stat
+              label="7D PnL"
+              value={pool.pnl7d}
+              suffix="%"
+              change={pool.pnl7d}
+            />
+            <Stat
+              label="30D PnL"
+              value={pool.pnl30d}
+              suffix="%"
+              change={pool.pnl30d}
+            />
             <Stat label="Share Price" value={pool.sharePrice.toFixed(3)} />
           </div>
 
           <div className="space-y-6 mb-8">
-            <LivePositionsPanel poolAddress={poolAddress} />
-            <LiveTradeLog poolAddress={poolAddress} />
+            <LivePositionsPanel
+              poolAddress={poolAddress}
+              authorityHint={phoenixAuthority}
+            />
+            <LiveTradeLog
+              poolAddress={poolAddress}
+              authorityHint={phoenixAuthority}
+            />
           </div>
 
           <Card>
