@@ -22,7 +22,7 @@ const RPC =
   process.env.NEXT_PUBLIC_SOLANA_RPC ?? clusterApiUrl("mainnet-beta");
 
 type WalletContextValue = {
-  connection: Connection;
+  connection: Connection | null;
   publicKey: PublicKey | null;
   address: string | null;
   connected: boolean;
@@ -35,26 +35,59 @@ type WalletContextValue = {
   closeModal: () => void;
   modalOpen: boolean;
   wallets: SolanaWalletAdapter[];
+  ready: boolean;
 };
 
-const WalletContext = createContext<WalletContextValue | null>(null);
+const noop = async () => {};
+
+const defaultValue: WalletContextValue = {
+  connection: null,
+  publicKey: null,
+  address: null,
+  connected: false,
+  connecting: false,
+  wallet: null,
+  connect: noop,
+  disconnect: noop,
+  signMessage: null,
+  openModal: () => {},
+  closeModal: () => {},
+  modalOpen: false,
+  wallets: AVAILABLE_WALLETS,
+  ready: false,
+};
+
+const WalletContext = createContext<WalletContextValue>(defaultValue);
 
 export function WalletProvider({ children }: { children: ReactNode }) {
+  const [mounted, setMounted] = useState(false);
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
   const [wallet, setWallet] = useState<SolanaWalletAdapter | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const connection = useMemo(() => new Connection(RPC, "confirmed"), []);
+
+  const connection = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return new Connection(RPC, "confirmed");
+    } catch {
+      return null;
+    }
+  }, []);
 
   const address = publicKey?.toBase58() ?? null;
   const connected = Boolean(publicKey);
 
   const authenticate = useCallback(
     async (adapter: SolanaWalletAdapter, pubkey: string) => {
-      await signInWithWallet({
-        publicKey: pubkey,
-        signMessage: (msg) => adapter.signMessage(msg),
-      });
+      try {
+        await signInWithWallet({
+          publicKey: pubkey,
+          signMessage: (msg) => adapter.signMessage(msg),
+        });
+      } catch (e) {
+        console.warn("SIWS authentication failed:", e);
+      }
     },
     []
   );
@@ -68,7 +101,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       if (!target.isInstalled()) {
         setModalOpen(true);
-        throw new Error(`${target.name} is not installed`);
+        return;
       }
 
       setConnecting(true);
@@ -79,6 +112,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setWallet(target);
         setModalOpen(false);
         await authenticate(target, pubkey);
+      } catch (e) {
+        console.warn("Wallet connect failed:", e);
       } finally {
         setConnecting(false);
       }
@@ -87,26 +122,55 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   );
 
   const disconnect = useCallback(async () => {
-    if (wallet) await wallet.disconnect().catch(() => {});
-    await signOutWallet();
+    try {
+      if (wallet) await wallet.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      await signOutWallet();
+    } catch {
+      // ignore
+    }
     setPublicKey(null);
     setWallet(null);
   }, [wallet]);
 
-  // Auto-reconnect Phantom if previously connected
   useEffect(() => {
-    const phantom = (window as Window & { phantom?: { solana?: { publicKey?: { toString: () => string }; isConnected?: boolean } } }).phantom?.solana;
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    if (typeof window === "undefined") return;
+
+    type PhantomGlobal = {
+      phantom?: {
+        solana?: {
+          publicKey?: { toString: () => string } | null;
+          isConnected?: boolean;
+        };
+      };
+    };
+    const phantom = (window as Window & PhantomGlobal).phantom?.solana;
+
     if (phantom?.isConnected && phantom.publicKey) {
-      const pubkey = phantom.publicKey.toString();
-      setPublicKey(new PublicKey(pubkey));
-      setWallet(PHANTOM);
-      fetchSession().then((session) => {
-        if (session !== pubkey) {
-          authenticate(PHANTOM, pubkey).catch(() => {});
-        }
-      });
+      try {
+        const pubkey = phantom.publicKey.toString();
+        setPublicKey(new PublicKey(pubkey));
+        setWallet(PHANTOM);
+        fetchSession()
+          .then((session) => {
+            if (session !== pubkey) {
+              authenticate(PHANTOM, pubkey).catch(() => {});
+            }
+          })
+          .catch(() => {});
+      } catch {
+        // ignore
+      }
     }
-  }, [authenticate]);
+  }, [mounted, authenticate]);
 
   const signMessage = wallet
     ? (message: Uint8Array) => wallet.signMessage(message)
@@ -126,6 +190,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     closeModal: () => setModalOpen(false),
     modalOpen,
     wallets: AVAILABLE_WALLETS,
+    ready: mounted,
   };
 
   return (
@@ -134,7 +199,5 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 }
 
 export function useWallet() {
-  const ctx = useContext(WalletContext);
-  if (!ctx) throw new Error("useWallet must be used within WalletProvider");
-  return ctx;
+  return useContext(WalletContext);
 }

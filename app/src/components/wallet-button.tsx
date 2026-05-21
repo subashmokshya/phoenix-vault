@@ -5,7 +5,16 @@ import { useWallet } from "@/lib/wallet/context";
 import { Button } from "./ui/button";
 
 export function WalletButton() {
-  const { connected, address, connecting, openModal, disconnect } = useWallet();
+  const { connected, address, connecting, openModal, disconnect, ready } =
+    useWallet();
+
+  if (!ready) {
+    return (
+      <Button size="sm" variant="secondary" disabled>
+        Connect Wallet
+      </Button>
+    );
+  }
 
   if (connected && address) {
     return (
