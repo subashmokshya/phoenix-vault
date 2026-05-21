@@ -30,6 +30,14 @@ export function getLocalPool(address: string): PoolCard | null {
   return readLocalPools().find((p) => p.address === address) ?? null;
 }
 
+export function getAllLocalPools(): PoolCard[] {
+  return readLocalPools();
+}
+
+export function getLocalPoolsByManager(manager: string): PoolCard[] {
+  return readLocalPools().filter((p) => p.manager === manager);
+}
+
 function readLocalPools(): PoolCard[] {
   if (typeof window === "undefined") return [];
   try {
