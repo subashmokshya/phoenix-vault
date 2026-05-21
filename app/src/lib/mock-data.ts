@@ -14,6 +14,7 @@ export type PoolCard = {
   depositorCount: number;
   sharePrice: number;
   navHistory: { ts: string; nav: number }[];
+  phoenixAuthority?: string;
 };
 
 export const DEMO_POOLS: PoolCard[] = [

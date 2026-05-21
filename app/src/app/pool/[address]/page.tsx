@@ -7,6 +7,8 @@ import { PnlChart } from "@/components/charts/pnl-chart";
 import { Stat } from "@/components/ui/stat";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { LivePositionsPanel } from "@/components/live/live-positions";
+import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { getPoolByAddress, type PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
 import { formatBps, cn } from "@/lib/utils";
@@ -161,6 +163,11 @@ export default function PoolDetailPage() {
             <Stat label="7D PnL" value={pool.pnl7d} suffix="%" change={pool.pnl7d} />
             <Stat label="30D PnL" value={pool.pnl30d} suffix="%" change={pool.pnl30d} />
             <Stat label="Share Price" value={pool.sharePrice.toFixed(3)} />
+          </div>
+
+          <div className="space-y-6 mb-8">
+            <LivePositionsPanel poolAddress={poolAddress} />
+            <LiveTradeLog poolAddress={poolAddress} />
           </div>
 
           <Card>

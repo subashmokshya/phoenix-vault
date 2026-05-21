@@ -182,6 +182,7 @@ function mapDbPoolToCard(row: typeof schema.pools.$inferSelect): PoolCard {
     depositorCount: 0,
     sharePrice: 1,
     navHistory: [],
+    phoenixAuthority: row.phoenixAuthority ?? undefined,
   };
 }
 
