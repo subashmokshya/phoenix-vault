@@ -5,14 +5,13 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { PnlChart } from "@/components/charts/pnl-chart";
 import { Stat } from "@/components/ui/stat";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { LivePositionsPanel } from "@/components/live/live-positions";
 import { LiveTradeLog } from "@/components/live/live-trade-log";
+import { DepositWidget } from "@/components/deposit/deposit-widget";
 import { getPoolByAddress, type PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
 import { formatBps, cn } from "@/lib/utils";
-import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 
 const RANGES = ["1d", "7d", "30d", "all"] as const;
 
@@ -27,25 +26,6 @@ export default function PoolDetailPage() {
   const [loading, setLoading] = useState(!fallbackPool);
   const [range, setRange] = useState<(typeof RANGES)[number]>("7d");
   const [navHistory, setNavHistory] = useState(fallbackPool?.navHistory ?? []);
-  const [depositAmount, setDepositAmount] = useState("");
-  const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
-  const [txStatus, setTxStatus] = useState<string | null>(null);
-  const { connected, address: walletAddress, connect, requireWallet } =
-    useSolanaWallet();
-
-  async function handleVaultAction() {
-    if (!requireWallet()) return;
-    const amount = parseFloat(depositAmount);
-    if (!amount || amount <= 0) {
-      setTxStatus("Enter a valid USDC amount");
-      return;
-    }
-    setTxStatus(
-      mode === "deposit"
-        ? `Ready to deposit ${amount} USDC from ${walletAddress?.slice(0, 4)}… — sign init_vault deposit tx on-chain when program is deployed.`
-        : `Withdrawal request queued for ${amount} USDC — processed after cooldown when vault is flat.`
-    );
-  }
 
   useEffect(() => {
     let active = true;
@@ -194,63 +174,13 @@ export default function PoolDetailPage() {
         </div>
 
         <aside className="w-full lg:w-80 shrink-0">
-          <Card className="sticky top-24">
-            <div className="flex rounded-full bg-surface-2 p-1 mb-4">
-              {(["deposit", "withdraw"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={cn(
-                    "flex-1 py-2 rounded-full text-sm font-medium capitalize transition-colors",
-                    mode === m ? "bg-accent text-white" : "text-muted"
-                  )}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-            <label className="text-xs text-muted uppercase tracking-wider">
-              Amount (USDC)
-            </label>
-            <input
-              type="number"
-              value={depositAmount}
-              onChange={(e) => setDepositAmount(e.target.value)}
-              placeholder="0.00"
-              className="w-full mt-2 h-12 px-4 rounded-xl bg-surface-2 border border-border text-xl font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-accent/50"
+          <div className="sticky top-24">
+            <DepositWidget
+              poolAddress={poolAddress}
+              poolName={pool.name}
+              managerAddress={pool.manager}
             />
-            <p className="text-xs text-muted mt-2 mb-4">
-              Deposits only execute when the vault has zero open positions
-              (manager-flat window).
-            </p>
-            <Button className="w-full" size="lg" onClick={handleVaultAction}>
-              {!connected
-                ? "Connect Wallet"
-                : mode === "deposit"
-                  ? "Deposit"
-                  : "Request Withdraw"}
-            </Button>
-            {txStatus && (
-              <p className="text-xs text-muted text-center mt-3">{txStatus}</p>
-            )}
-            {!connected && !txStatus && (
-              <p className="text-xs text-muted text-center mt-3">
-                <button
-                  type="button"
-                  onClick={connect}
-                  className="text-accent hover:underline"
-                >
-                  Connect Solana wallet
-                </button>{" "}
-                to continue
-              </p>
-            )}
-            {connected && walletAddress && !txStatus && (
-              <p className="text-xs text-muted text-center mt-3 font-mono">
-                {walletAddress.slice(0, 4)}…{walletAddress.slice(-4)}
-              </p>
-            )}
-          </Card>
+          </div>
         </aside>
       </div>
     </div>

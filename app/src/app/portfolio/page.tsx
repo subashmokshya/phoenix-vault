@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   ArrowDown,
   ArrowUp,
   BarChart3,
+  ExternalLink,
+  History,
   Pause,
   Play,
   Plus,
@@ -22,6 +24,12 @@ import {
 } from "@/lib/mock-data";
 import { getLocalPoolsByManager } from "@/lib/pools/local-pools";
 import { loadQueue, loadSpec } from "@/lib/strategy/store";
+import {
+  listDeposits,
+  listWithdrawals,
+  type DepositEntry,
+  type WithdrawalRequest,
+} from "@/lib/deposits/store";
 import {
   formatPct,
   formatUsd,
@@ -43,15 +51,87 @@ type ManagedPool = {
 export default function PortfolioPage() {
   const { connected, address, connect } = useSolanaWallet();
 
-  // Demo deposits — would come from on-chain depositor accounts in production.
-  const deposits = useMemo(() => {
-    if (!address) return [];
-    return DEMO_POOLS.slice(0, 3).map((p, i) => ({
-      pool: p,
-      shares: 1000 * (i + 1),
-      value: (1000 * (i + 1) * p.sharePrice) / 1000,
-      pnl: p.pnl7d,
-    }));
+  const [deposits, setDeposits] = useState<
+    {
+      pool: PoolCard;
+      shares: number;
+      value: number;
+      pnl: number;
+      live: boolean;
+    }[]
+  >([]);
+  const [depositLedger, setDepositLedger] = useState<DepositEntry[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
+
+  useEffect(() => {
+    if (!address) {
+      setDeposits([]);
+      setDepositLedger([]);
+      setWithdrawals([]);
+      return;
+    }
+
+    const ledger = listDeposits({ depositor: address });
+    const wRecords = listWithdrawals({ depositor: address });
+    setDepositLedger(ledger);
+    setWithdrawals(wRecords);
+
+    const grouped = new Map<string, number>();
+    for (const d of ledger) {
+      grouped.set(d.poolAddress, (grouped.get(d.poolAddress) ?? 0) + d.amount);
+    }
+    for (const w of wRecords) {
+      if (w.status === "paid") {
+        grouped.set(
+          w.poolAddress,
+          (grouped.get(w.poolAddress) ?? 0) - w.amount
+        );
+      }
+    }
+
+    async function resolve() {
+      const entries = await Promise.all(
+        Array.from(grouped.entries())
+          .filter(([, v]) => v > 0)
+          .map(async ([poolAddress, value]) => {
+            const local =
+              DEMO_POOLS.find((p) => p.address === poolAddress) ?? null;
+            const remote: PoolCard | null = local
+              ? null
+              : await fetch(`/api/pools/${poolAddress}`)
+                  .then((r) => (r.ok ? r.json() : null))
+                  .then((d) => (d?.pool as PoolCard | null) ?? null)
+                  .catch(() => null);
+            const pool =
+              local ?? remote ?? {
+                address: poolAddress,
+                name: "Phoenix Pool",
+                manager: address!,
+                managerName: shortAddress(address!, 4),
+                strategyTag: "Phoenix",
+                description: "",
+                aum: 0,
+                pnl7d: 0,
+                pnl30d: 0,
+                perfFeeBps: 2000,
+                mgmtFeeBps: 100,
+                featured: false,
+                depositorCount: 0,
+                sharePrice: 1,
+                navHistory: [],
+              };
+            return {
+              pool,
+              shares: value,
+              value,
+              pnl: pool.pnl7d,
+              live: true,
+            };
+          })
+      );
+      setDeposits(entries);
+    }
+    resolve();
   }, [address]);
 
   const [managed, setManaged] = useState<ManagedPool[]>([]);
@@ -215,7 +295,7 @@ export default function PortfolioPage() {
         )}
       </section>
 
-      <section>
+      <section className="mb-12">
         <SectionHeader
           icon={<BarChart3 className="h-4 w-4 text-accent" />}
           title="Your Deposits"
@@ -279,8 +359,117 @@ export default function PortfolioPage() {
           </div>
         )}
       </section>
+
+      {(depositLedger.length > 0 || withdrawals.length > 0) && (
+        <section>
+          <SectionHeader
+            icon={<History className="h-4 w-4 text-accent" />}
+            title="Recent Activity"
+            subtitle={`${depositLedger.length} deposits · ${withdrawals.length} withdrawals`}
+          />
+          <Card>
+            <ul className="divide-y divide-border/50">
+              {mergeActivity(depositLedger, withdrawals).slice(0, 15).map(
+                (a) => (
+                  <li
+                    key={a.id}
+                    className="flex items-center justify-between py-3 first:pt-0 last:pb-0 text-sm"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={cn(
+                          "inline-flex items-center justify-center h-7 w-7 rounded-full",
+                          a.kind === "deposit"
+                            ? "bg-positive/15 text-positive"
+                            : "bg-negative/15 text-negative"
+                        )}
+                      >
+                        {a.kind === "deposit" ? (
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        )}
+                      </span>
+                      <div>
+                        <div className="font-medium capitalize">
+                          {a.kind === "deposit"
+                            ? "Deposit"
+                            : `Withdrawal · ${a.status}`}
+                        </div>
+                        <Link
+                          href={`/pool/${a.poolAddress}`}
+                          className="text-[11px] text-muted hover:text-accent font-mono"
+                        >
+                          {shortAddress(a.poolAddress, 6)}
+                        </Link>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <div className="font-semibold tabular-nums">
+                          {a.kind === "deposit" ? "+" : "-"}
+                          {formatUsd(a.amount)}
+                        </div>
+                        <div className="text-[11px] text-muted">
+                          {new Date(a.ts).toLocaleString()}
+                        </div>
+                      </div>
+                      {a.explorerUrl && (
+                        <a
+                          href={a.explorerUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted hover:text-accent"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                    </div>
+                  </li>
+                )
+              )}
+            </ul>
+          </Card>
+        </section>
+      )}
     </div>
   );
+}
+
+type ActivityRow = {
+  id: string;
+  kind: "deposit" | "withdraw";
+  poolAddress: string;
+  amount: number;
+  ts: number;
+  status?: string;
+  explorerUrl?: string;
+};
+
+function mergeActivity(
+  deposits: DepositEntry[],
+  withdrawals: WithdrawalRequest[]
+): ActivityRow[] {
+  const rows: ActivityRow[] = [
+    ...deposits.map<ActivityRow>((d) => ({
+      id: `d-${d.id}`,
+      kind: "deposit",
+      poolAddress: d.poolAddress,
+      amount: d.amount,
+      ts: d.ts,
+      explorerUrl: d.explorerUrl,
+    })),
+    ...withdrawals.map<ActivityRow>((w) => ({
+      id: `w-${w.id}`,
+      kind: "withdraw",
+      poolAddress: w.poolAddress,
+      amount: w.amount,
+      ts: w.resolvedAt ?? w.ts,
+      status: w.status,
+      explorerUrl: w.managerSignatureUrl,
+    })),
+  ];
+  return rows.sort((a, b) => b.ts - a.ts);
 }
 
 function Kpi({ label, value }: { label: string; value: React.ReactNode }) {

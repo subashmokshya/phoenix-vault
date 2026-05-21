@@ -14,6 +14,7 @@ import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
 import { StrategyCopilot } from "@/components/strategy/strategy-copilot";
 import { ProposedTrades } from "@/components/strategy/proposed-trades";
+import { PendingWithdrawals } from "@/components/deposit/pending-withdrawals";
 import {
   useLivePositions,
   useLiveTrades,
@@ -236,6 +237,7 @@ export default function ManagePoolPage() {
       <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 items-start">
         <div className="space-y-6">
           <LivePositionsPanel poolAddress={address} />
+          <PendingWithdrawals poolAddress={address} isManager={isManager} />
           <ProposedTrades
             trades={queue}
             onApprove={approveTrade}
