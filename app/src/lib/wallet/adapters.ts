@@ -1,3 +1,4 @@
+import type { Transaction } from "@solana/web3.js";
 import type { SolanaWalletAdapter } from "./types";
 
 type Provider = {
@@ -9,6 +10,10 @@ type Provider = {
     message: Uint8Array,
     display?: string
   ) => Promise<{ signature: Uint8Array }>;
+  signAndSendTransaction?: (
+    tx: Transaction
+  ) => Promise<{ signature: string }>;
+  signTransaction?: (tx: Transaction) => Promise<Transaction>;
   publicKey?: { toString: () => string } | null;
 };
 
@@ -48,6 +53,14 @@ function adapterFromProvider(
       if (!provider) throw new Error(`${name} wallet not connected`);
       const res = await provider.signMessage(message, "utf8");
       return res.signature;
+    },
+    signAndSendTransaction: async (tx) => {
+      const provider = getProvider();
+      if (!provider) throw new Error(`${name} wallet not connected`);
+      if (typeof provider.signAndSendTransaction === "function") {
+        return provider.signAndSendTransaction(tx);
+      }
+      throw new Error(`${name} does not support signAndSendTransaction`);
     },
   };
 }

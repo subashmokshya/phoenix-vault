@@ -9,7 +9,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
+import {
+  Connection,
+  PublicKey,
+  Transaction,
+  clusterApiUrl,
+} from "@solana/web3.js";
 import {
   fetchSession,
   signInWithWallet,
@@ -31,11 +36,15 @@ type WalletContextValue = {
   connect: (adapter?: SolanaWalletAdapter) => Promise<void>;
   disconnect: () => Promise<void>;
   signMessage: ((message: Uint8Array) => Promise<Uint8Array>) | null;
+  signAndSendTransaction:
+    | ((tx: Transaction) => Promise<{ signature: string }>)
+    | null;
   openModal: () => void;
   closeModal: () => void;
   modalOpen: boolean;
   wallets: SolanaWalletAdapter[];
   ready: boolean;
+  cluster: "mainnet" | "devnet" | "testnet" | "unknown";
 };
 
 const noop = async () => {};
@@ -50,11 +59,13 @@ const defaultValue: WalletContextValue = {
   connect: noop,
   disconnect: noop,
   signMessage: null,
+  signAndSendTransaction: null,
   openModal: () => {},
   closeModal: () => {},
   modalOpen: false,
   wallets: AVAILABLE_WALLETS,
   ready: false,
+  cluster: "unknown",
 };
 
 const WalletContext = createContext<WalletContextValue>(defaultValue);
@@ -176,6 +187,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     ? (message: Uint8Array) => wallet.signMessage(message)
     : null;
 
+  const signAndSendTransaction = wallet
+    ? (tx: Transaction) => wallet.signAndSendTransaction(tx)
+    : null;
+
+  const cluster: "mainnet" | "devnet" | "testnet" | "unknown" = (() => {
+    const url = connection?.rpcEndpoint ?? RPC;
+    if (url.includes("devnet")) return "devnet";
+    if (url.includes("testnet")) return "testnet";
+    if (url.includes("mainnet") || url.includes("api.mainnet"))
+      return "mainnet";
+    return "unknown";
+  })();
+
   const value: WalletContextValue = {
     connection,
     publicKey,
@@ -186,11 +210,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     connect,
     disconnect,
     signMessage,
+    signAndSendTransaction,
     openModal: () => setModalOpen(true),
     closeModal: () => setModalOpen(false),
     modalOpen,
     wallets: AVAILABLE_WALLETS,
     ready: mounted,
+    cluster,
   };
 
   return (
