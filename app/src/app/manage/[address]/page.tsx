@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { ShieldCheck, ShieldOff, ExternalLink, AlertCircle } from "lucide-react";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
+import { recoveryPoolCard } from "@/lib/pools/recovery";
 import { LivePositionsPanel } from "@/components/live/live-positions";
 import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
@@ -40,10 +41,20 @@ import { formatUsd, cn } from "@/lib/utils";
 
 export default function ManagePoolPage() {
   const params = useParams();
+  const search = useSearchParams();
   const address = params.address as string;
+  const managerHint = search?.get("manager") ?? null;
+  const nameHint = search?.get("name") ?? null;
+  const strategyHint = search?.get("strategy") ?? null;
   const fallback = useMemo(
-    () => getLocalPool(address),
-    [address]
+    () =>
+      getLocalPool(address) ??
+      recoveryPoolCard(address, {
+        manager: managerHint,
+        name: nameHint,
+        strategyTag: strategyHint,
+      }),
+    [address, managerHint, nameHint, strategyHint]
   );
   const [pool, setPool] = useState<PoolCard | null>(fallback);
   const [loading, setLoading] = useState(!fallback);

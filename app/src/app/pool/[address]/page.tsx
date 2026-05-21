@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { PnlChart } from "@/components/charts/pnl-chart";
 import { Stat } from "@/components/ui/stat";
@@ -12,16 +12,27 @@ import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { DepositWidget } from "@/components/deposit/deposit-widget";
 import type { PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
+import { recoveryPoolCard } from "@/lib/pools/recovery";
 import { formatBps, cn } from "@/lib/utils";
 
 const RANGES = ["1d", "7d", "30d", "all"] as const;
 
 export default function PoolDetailPage() {
   const params = useParams();
+  const search = useSearchParams();
   const poolAddress = params.address as string;
+  const managerHint = search?.get("manager") ?? null;
+  const nameHint = search?.get("name") ?? null;
+  const strategyHint = search?.get("strategy") ?? null;
   const fallbackPool = useMemo(
-    () => getLocalPool(poolAddress),
-    [poolAddress]
+    () =>
+      getLocalPool(poolAddress) ??
+      recoveryPoolCard(poolAddress, {
+        manager: managerHint,
+        name: nameHint,
+        strategyTag: strategyHint,
+      }),
+    [poolAddress, managerHint, nameHint, strategyHint]
   );
   const [pool, setPool] = useState<PoolCard | null>(fallbackPool);
   const [loading, setLoading] = useState(!fallbackPool);
@@ -45,10 +56,19 @@ export default function PoolDetailPage() {
         return r.json();
       })
       .then((d) => {
-        if (!active || !d?.pool) return;
-        setPool(d.pool);
-        setNavHistory(d.pool.navHistory ?? []);
-        setNotFound(false);
+        if (!active) return;
+        if (d?.pool) {
+          setPool(d.pool);
+          setNavHistory(d.pool.navHistory ?? []);
+          setNotFound(false);
+          return;
+        }
+        // No DB row: best-effort back-fill the registry if we have a local
+        // pool entry (the launcher's device) so other viewers can find it.
+        const local = getLocalPool(poolAddress);
+        if (local) {
+          backfillRegistry(local).catch(() => {});
+        }
       })
       .catch(() => {})
       .finally(() => {
@@ -84,8 +104,9 @@ export default function PoolDetailPage() {
       <div className="mx-auto max-w-6xl px-6 py-24 text-center space-y-4">
         <h1 className="text-2xl font-semibold">Pool not found</h1>
         <p className="text-sm text-muted max-w-md mx-auto">
-          No pool with this address is registered. Pools that were launched
-          locally only appear on the device that launched them.
+          No pool with this address is registered yet. If you just launched it,
+          re-open the success card from /create and copy the share link — it
+          includes the manager hint required for cross-device discovery.
         </p>
         <div className="flex gap-2 justify-center">
           <Link href="/explore">
@@ -219,4 +240,26 @@ export default function PoolDetailPage() {
       </div>
     </div>
   );
+}
+
+async function backfillRegistry(local: PoolCard): Promise<void> {
+  try {
+    await fetch("/api/pools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        address: local.address,
+        manager: local.manager,
+        name: local.name,
+        description: local.description ?? "",
+        strategyTag: local.strategyTag,
+        perfFeeBps: local.perfFeeBps,
+        mgmtFeeBps: local.mgmtFeeBps,
+        phoenixAuthority: local.phoenixAuthority ?? local.manager,
+      }),
+    });
+  } catch {
+    // best-effort; the original launcher can retry from /create or /manage
+  }
 }

@@ -72,7 +72,14 @@ export async function POST(req: NextRequest) {
   }
 
   if (!process.env.DATABASE_URL) {
-    return NextResponse.json({ ok: true, mock: true, pool: parsed.data });
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Pool registry database is not configured. The on-chain launch succeeded but cannot be saved to the registry.",
+      },
+      { status: 503 }
+    );
   }
 
   const db = getDb();

@@ -29,7 +29,16 @@ type LaunchState =
   | { phase: "signing" }
   | { phase: "confirming"; signature: string }
   | { phase: "saving"; result: LaunchResult }
-  | { phase: "done"; result: LaunchResult; poolAddress: string }
+  | {
+      phase: "done";
+      result: LaunchResult;
+      poolAddress: string;
+      registry: "saved" | "pending";
+      registryError?: string;
+      manager: string;
+      name: string;
+      strategyTag: string;
+    }
   | { phase: "error"; message: string };
 
 async function pickVaultAddress(manager: PublicKey): Promise<{
@@ -109,6 +118,8 @@ export default function CreatePoolPage() {
       saveLocalPool(poolMetadata);
 
       // Persist to the registry so other depositors can discover the pool.
+      let registry: "saved" | "pending" = "pending";
+      let registryError: string | undefined;
       try {
         const res = await fetch("/api/pools", {
           method: "POST",
@@ -120,15 +131,26 @@ export default function CreatePoolPage() {
             vaultIndex,
           }),
         });
-        if (!res.ok) {
+        if (res.ok) {
+          registry = "saved";
+        } else {
           const err = (await res.json().catch(() => ({}))) as { error?: string };
-          console.warn("Pool metadata save failed:", err.error ?? res.statusText);
+          registryError = err.error ?? `${res.status} ${res.statusText}`;
         }
       } catch (e) {
-        console.warn("Pool metadata save threw:", e);
+        registryError = e instanceof Error ? e.message : String(e);
       }
 
-      setLaunch({ phase: "done", result, poolAddress });
+      setLaunch({
+        phase: "done",
+        result,
+        poolAddress,
+        registry,
+        registryError,
+        manager: address,
+        name: draft.name,
+        strategyTag: draft.strategyTag,
+      });
     } catch (e) {
       const message =
         e instanceof Error ? e.message : "Failed to launch pool on-chain";
@@ -333,6 +355,13 @@ function LaunchPanel({
   cluster: "mainnet" | "devnet" | "testnet" | "unknown";
 }) {
   if (launch.phase === "done") {
+    const hintParams = new URLSearchParams({
+      manager: launch.manager,
+      name: launch.name,
+      strategy: launch.strategyTag,
+    }).toString();
+    const poolUrl = `/pool/${launch.poolAddress}?${hintParams}`;
+    const manageUrl = `/manage/${launch.poolAddress}?${hintParams}`;
     return (
       <motion.div
         initial={{ opacity: 0, y: 8 }}
@@ -350,6 +379,16 @@ function LaunchPanel({
               </p>
             </div>
           </div>
+
+          {launch.registry === "pending" && (
+            <RegistryRetry
+              poolAddress={launch.poolAddress}
+              manager={launch.manager}
+              name={launch.name}
+              strategyTag={launch.strategyTag}
+              initialError={launch.registryError}
+            />
+          )}
 
           <div className="space-y-2 text-sm">
             <Row
@@ -371,11 +410,21 @@ function LaunchPanel({
               label="Pool"
               value={
                 <Link
-                  href={`/pool/${launch.poolAddress}`}
+                  href={poolUrl}
                   className="font-mono text-accent hover:underline"
                 >
                   View pool →
                 </Link>
+              }
+            />
+            <Row
+              label="Registry"
+              value={
+                launch.registry === "saved" ? (
+                  <span className="text-positive">saved</span>
+                ) : (
+                  <span className="text-accent">pending</span>
+                )
               }
             />
             <Row
@@ -385,13 +434,18 @@ function LaunchPanel({
           </div>
 
           <div className="flex gap-2">
-            <Link href={`/pool/${launch.poolAddress}`} className="flex-1">
-              <Button className="w-full">Open pool</Button>
+            <Link href={manageUrl} className="flex-1">
+              <Button className="w-full">Open manager</Button>
             </Link>
-            <Button variant="secondary" onClick={onReset}>
-              Launch another
-            </Button>
+            <Link href={poolUrl} className="flex-1">
+              <Button variant="secondary" className="w-full">
+                View public
+              </Button>
+            </Link>
           </div>
+          <Button variant="secondary" onClick={onReset} className="w-full">
+            Launch another
+          </Button>
         </Card>
       </motion.div>
     );
@@ -453,6 +507,94 @@ function Row({
     <div className="flex justify-between items-center">
       <span className="text-muted">{label}</span>
       <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
+function RegistryRetry({
+  poolAddress,
+  manager,
+  name,
+  strategyTag,
+  initialError,
+}: {
+  poolAddress: string;
+  manager: string;
+  name: string;
+  strategyTag: string;
+  initialError?: string;
+}) {
+  const [state, setState] = useState<
+    | { phase: "idle"; error?: string }
+    | { phase: "saving" }
+    | { phase: "saved" }
+    | { phase: "failed"; error: string }
+  >({ phase: "idle", error: initialError });
+
+  async function retry() {
+    setState({ phase: "saving" });
+    try {
+      const res = await fetch("/api/pools", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          address: poolAddress,
+          manager,
+          name,
+          description: "",
+          strategyTag,
+          perfFeeBps: 2000,
+          mgmtFeeBps: 100,
+          phoenixAuthority: manager,
+        }),
+      });
+      if (res.ok) {
+        setState({ phase: "saved" });
+      } else {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        setState({
+          phase: "failed",
+          error: err.error ?? `${res.status} ${res.statusText}`,
+        });
+      }
+    } catch (e) {
+      setState({
+        phase: "failed",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  if (state.phase === "saved") return null;
+
+  return (
+    <div className="rounded-xl border border-accent/40 bg-accent/10 text-accent text-xs p-3 space-y-2">
+      <div className="font-semibold">Registry sync pending</div>
+      <p className="text-accent/90 leading-relaxed">
+        The pool is permanently launched on-chain, but the off-chain registry
+        hasn&apos;t saved it yet. Other depositors can still find it via the
+        share link below — it includes the manager hint required for recovery.
+        Retry the registry save when ready.
+      </p>
+      {state.phase === "failed" && state.error && (
+        <p className="font-mono text-[11px] break-all opacity-80">
+          {state.error}
+        </p>
+      )}
+      {state.phase === "idle" && state.error && (
+        <p className="font-mono text-[11px] break-all opacity-80">
+          {state.error}
+        </p>
+      )}
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={retry}
+        disabled={state.phase === "saving"}
+      >
+        {state.phase === "saving" ? "Saving…" : "Retry registry save"}
+      </Button>
     </div>
   );
 }
