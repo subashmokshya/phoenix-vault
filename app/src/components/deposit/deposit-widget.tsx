@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
@@ -8,6 +8,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   ExternalLink,
+  Info,
   RefreshCw,
   ShieldAlert,
   Wallet,
@@ -67,6 +68,16 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
   const cluster: ClusterKind = clusterFromRpc(rpcUrl);
   const networkLabel = cluster === "mainnet" ? "Mainnet" : cluster;
 
+  const managerPubkey = useMemo(() => {
+    if (!managerAddress) return null;
+    try {
+      return new PublicKey(managerAddress);
+    } catch {
+      return null;
+    }
+  }, [managerAddress]);
+  const managerIsLive = managerPubkey !== null;
+
   const myDeposited = address ? netPositionFor(address, poolAddress) : 0;
   const myDeposits = address
     ? listDeposits({ depositor: address, poolAddress })
@@ -112,12 +123,30 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
       setStatus({ phase: "error", message: "Enter a USDC amount" });
       return;
     }
+    if (!managerPubkey) {
+      setStatus({
+        phase: "error",
+        message:
+          "This pool is a demo seed and has no live manager wallet — deposits are disabled. Launch your own pool to try the real flow.",
+      });
+      return;
+    }
+    let fromPubkey: PublicKey;
+    try {
+      fromPubkey = new PublicKey(address);
+    } catch {
+      setStatus({
+        phase: "error",
+        message: "Your connected wallet address looks invalid. Reconnect and retry.",
+      });
+      return;
+    }
     setStatus({ phase: "preparing" });
     try {
       setStatus({ phase: "signing" });
       const result = await sendUsdcTransfer({
-        from: new PublicKey(address),
-        to: new PublicKey(managerAddress),
+        from: fromPubkey,
+        to: managerPubkey,
         amountUi: validAmount,
         cluster,
         signAndSend: signAndSendTransaction,
@@ -165,11 +194,21 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
       });
       return;
     }
+    let depositorPubkey: PublicKey;
+    try {
+      depositorPubkey = new PublicKey(address);
+    } catch {
+      setStatus({
+        phase: "error",
+        message: "Your connected wallet address looks invalid. Reconnect and retry.",
+      });
+      return;
+    }
     const req: WithdrawalRequest = {
       id: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
       poolAddress,
       depositor: address,
-      depositorAta: deriveUsdcAta(new PublicKey(address), cluster).toBase58(),
+      depositorAta: deriveUsdcAta(depositorPubkey, cluster).toBase58(),
       amount: validAmount,
       ts: Date.now(),
       status: "pending",
@@ -309,10 +348,35 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
         </div>
       </div>
 
+      {!managerIsLive && (
+        <div className="text-[11px] rounded-xl border border-accent/40 bg-accent/10 text-accent px-3 py-2 flex items-start gap-2">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <div className="space-y-1">
+            <div className="font-semibold">Demo pool · deposits disabled</div>
+            <p className="text-accent/90 leading-relaxed">
+              This vault uses a seeded manager placeholder, not a real Solana
+              wallet, so real USDC can&apos;t be routed to it. Launch your own
+              pool on{" "}
+              <Link href="/create" className="underline hover:no-underline">
+                /create
+              </Link>{" "}
+              to try the live deposit + trading flow with your wallet as
+              manager.
+            </p>
+          </div>
+        </div>
+      )}
+
       <Button
         className="w-full"
         size="lg"
-        disabled={busy || !validAmount || overBalance || overPosition}
+        disabled={
+          busy ||
+          !validAmount ||
+          overBalance ||
+          overPosition ||
+          (mode === "deposit" && !managerIsLive)
+        }
         onClick={() => (connected ? submit() : connect())}
       >
         {!connected

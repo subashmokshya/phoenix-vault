@@ -62,10 +62,37 @@ export function PendingWithdrawals({ poolAddress, isManager }: Props) {
     if (!isManager || !address || !signAndSendTransaction) return;
     setError(null);
     setProcessing((p) => ({ ...p, [req.id]: "signing" }));
+    let fromPubkey: PublicKey;
+    let toPubkey: PublicKey;
+    try {
+      fromPubkey = new PublicKey(address);
+    } catch {
+      setError("Your wallet address looks invalid. Reconnect and retry.");
+      setProcessing((p) => {
+        const n = { ...p };
+        delete n[req.id];
+        return n;
+      });
+      return;
+    }
+    try {
+      toPubkey = new PublicKey(req.depositor);
+    } catch {
+      setError(
+        `Recorded depositor "${shortAddress(req.depositor, 4)}" is not a valid Solana address; rejecting this request.`
+      );
+      reject(req, "Invalid depositor address");
+      setProcessing((p) => {
+        const n = { ...p };
+        delete n[req.id];
+        return n;
+      });
+      return;
+    }
     try {
       const result = await sendUsdcTransfer({
-        from: new PublicKey(address),
-        to: new PublicKey(req.depositor),
+        from: fromPubkey,
+        to: toPubkey,
         amountUi: req.amount,
         cluster,
         signAndSend: signAndSendTransaction,
