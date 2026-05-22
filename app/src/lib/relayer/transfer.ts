@@ -10,8 +10,25 @@ import {
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
   createTransferCheckedInstruction,
-  getAccount,
 } from "@solana/spl-token";
+
+/**
+ * Minimal SPL Token Account parser — avoids bundling oddities with
+ * `getAccount` in serverless functions. See the liquidity route for
+ * the same workaround.
+ */
+function parseTokenAccount(data: Buffer): {
+  amount: bigint;
+  delegate: PublicKey | null;
+  delegatedAmount: bigint;
+} {
+  const amount = data.readBigUInt64LE(64);
+  const delegateTag = data.readUInt32LE(72);
+  const delegate =
+    delegateTag === 1 ? new PublicKey(data.subarray(76, 108)) : null;
+  const delegatedAmount = data.readBigUInt64LE(121);
+  return { amount, delegate, delegatedAmount };
+}
 import {
   USDC_DECIMALS,
   deriveUsdcAta,
@@ -124,12 +141,18 @@ export async function relayUsdcRefund(
 
   // Sanity: confirm the manager ATA exists and has at least `amount`, and the
   // delegate of that ATA is our relayer pubkey with at least `amount` allowance.
-  const managerAcct = await getAccount(connection, managerAta);
+  const managerInfo = await connection.getAccountInfo(managerAta, "confirmed");
+  if (!managerInfo) {
+    throw new Error(
+      "Manager USDC token account does not exist on this cluster."
+    );
+  }
+  const managerAcct = parseTokenAccount(Buffer.from(managerInfo.data));
   if (managerAcct.amount < amount) {
     throw new Error(
-      `Manager USDC ATA only has ${
+      `Pool liquid balance is only ${
         Number(managerAcct.amount) / 1_000_000
-      } USDC; need ${amountUsdc} for refund.`
+      } USDC; ${amountUsdc} USDC is currently locked in open trades. Try a smaller amount or wait for positions to settle.`
     );
   }
   if (
@@ -149,12 +172,11 @@ export async function relayUsdcRefund(
   }
 
   // Ensure depositor ATA exists; if not, create it (relayer pays rent).
-  let depositorAtaExists = true;
-  try {
-    await getAccount(connection, depositorAta);
-  } catch {
-    depositorAtaExists = false;
-  }
+  const depositorInfo = await connection.getAccountInfo(
+    depositorAta,
+    "confirmed"
+  );
+  const depositorAtaExists = !!depositorInfo;
 
   const tx = new Transaction();
   tx.feePayer = relayer.publicKey;

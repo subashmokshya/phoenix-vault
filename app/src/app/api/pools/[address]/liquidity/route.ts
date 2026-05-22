@@ -1,11 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { getAccount } from "@solana/spl-token";
 import { getPoolFromRegistry } from "@/lib/registry/redis";
 import {
   deriveUsdcAta,
   type ClusterKind,
 } from "@/lib/spl/usdc";
+
+/**
+ * SPL Token Account v3 layout (165 bytes). Offsets we care about:
+ *   0..32   mint (Pubkey)
+ *   32..64  owner (Pubkey)
+ *   64..72  amount (u64 little-endian)
+ *   72..76  delegate option tag (4 bytes — 1 = present, 0 = none)
+ *   76..108 delegate (Pubkey, only valid when tag === 1)
+ *   ...
+ *   121..129 delegatedAmount (u64 little-endian)
+ */
+function parseTokenAccount(data: Buffer): {
+  amount: bigint;
+  delegate: string | null;
+  delegatedAmount: bigint;
+} {
+  const amount = data.readBigUInt64LE(64);
+  const delegateTag = data.readUInt32LE(72);
+  const delegate =
+    delegateTag === 1 ? new PublicKey(data.subarray(76, 108)).toBase58() : null;
+  const delegatedAmount = data.readBigUInt64LE(121);
+  return { amount, delegate, delegatedAmount };
+}
 
 const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -46,21 +68,19 @@ async function tryGetUsdcAccount(
   for (const url of urls) {
     try {
       const conn = new Connection(url, "confirmed");
-      const acct = await getAccount(conn, ata);
+      const info = await conn.getAccountInfo(ata, "confirmed");
+      if (!info) {
+        return { kind: "missing", rpcUrl: url };
+      }
+      const parsed = parseTokenAccount(Buffer.from(info.data));
       return {
         kind: "found",
-        amount: acct.amount,
-        delegate: acct.delegate?.toBase58() ?? null,
-        delegatedAmount: acct.delegatedAmount,
+        amount: parsed.amount,
+        delegate: parsed.delegate,
+        delegatedAmount: parsed.delegatedAmount,
         rpcUrl: url,
       };
     } catch (e) {
-      // TokenAccountNotFoundError: the ATA simply does not exist yet —
-      // that's a valid "0 liquidity" state, not an error.
-      const message = e instanceof Error ? e.message : String(e);
-      if (message.toLowerCase().includes("could not find account")) {
-        return { kind: "missing", rpcUrl: url };
-      }
       lastError = e;
     }
   }
