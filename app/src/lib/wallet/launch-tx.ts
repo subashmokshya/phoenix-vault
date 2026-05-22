@@ -6,6 +6,19 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createApproveCheckedInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
+} from "@solana/spl-token";
+import {
+  USDC_DECIMALS,
+  clusterFromRpc,
+  deriveUsdcAta,
+  usdcMintFor,
+} from "@/lib/spl/usdc";
+import { MAX_DELEGATION_LAMPORTS } from "@/lib/spl/approve";
 import { getLatestBlockhashWithFallback, getRpcUrls } from "./rpc";
 
 const MEMO_PROGRAM_ID = new PublicKey(
@@ -27,6 +40,8 @@ export type LaunchResult = {
   payload: LaunchPayload;
   explorerUrl: string;
   rpcUrl: string;
+  cluster: "devnet" | "testnet" | "mainnet";
+  relayerAuthorized: boolean;
 };
 
 type SignAndSendFn = (tx: Transaction) => Promise<{ signature: string }>;
@@ -50,19 +65,54 @@ export async function buildAndSendLaunchTx(params: {
   payer: PublicKey;
   payload: LaunchPayload;
   signAndSend: SignAndSendFn;
+  /** When provided, the launch tx will idempotently create the manager's
+   *  USDC ATA and approve this delegate for instant withdrawals in the same
+   *  signature. Pass `null` (or omit) to skip and keep the tx minimal. */
+  relayerDelegate?: PublicKey | null;
 }): Promise<LaunchResult> {
-  const { payer, payload, signAndSend } = params;
+  const { payer, payload, signAndSend, relayerDelegate } = params;
 
   const rpcUrls = getRpcUrls();
   const { blockhash, lastValidBlockHeight, rpcUrl } =
     await getLatestBlockhashWithFallback(rpcUrls, "confirmed");
 
-  const ix = buildMemoIx(payer, payload);
+  const cluster = detectCluster(rpcUrl);
+
   const tx = new Transaction();
   tx.feePayer = payer;
   tx.recentBlockhash = blockhash;
   tx.lastValidBlockHeight = lastValidBlockHeight;
-  tx.add(ix);
+  tx.add(buildMemoIx(payer, payload));
+
+  let relayerAuthorized = false;
+  if (relayerDelegate) {
+    const mint = usdcMintFor(clusterFromRpc(rpcUrl));
+    const managerAta = deriveUsdcAta(payer, clusterFromRpc(rpcUrl));
+    // Idempotent ATA create — safe even when the manager already has one.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        payer,
+        managerAta,
+        payer,
+        mint,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    );
+    tx.add(
+      createApproveCheckedInstruction(
+        managerAta,
+        mint,
+        relayerDelegate,
+        payer,
+        MAX_DELEGATION_LAMPORTS,
+        USDC_DECIMALS,
+        [],
+        TOKEN_PROGRAM_ID
+      )
+    );
+    relayerAuthorized = true;
+  }
 
   const { signature } = await signAndSend(tx);
 
@@ -77,9 +127,15 @@ export async function buildAndSendLaunchTx(params: {
     // ignore — signature is trackable on explorer regardless
   }
 
-  const cluster = detectCluster(rpcUrl);
   const clusterParam = cluster === "mainnet" ? "" : `?cluster=${cluster}`;
   const explorerUrl = `https://explorer.solana.com/tx/${signature}${clusterParam}`;
 
-  return { signature, payload, explorerUrl, rpcUrl };
+  return {
+    signature,
+    payload,
+    explorerUrl,
+    rpcUrl,
+    cluster,
+    relayerAuthorized,
+  };
 }

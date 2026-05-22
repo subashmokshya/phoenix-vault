@@ -64,6 +64,7 @@ export function DepositWidget({
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [serverPosition, setServerPosition] = useState<number | null>(null);
+  const [poolLiquidity, setPoolLiquidity] = useState<number | null>(null);
 
   const { connected, address, connect, requireWallet } = useSolanaWallet();
   const { signAndSendTransaction } = useWallet();
@@ -108,9 +109,25 @@ export function DepositWidget({
     }
   }, [address, poolAddress]);
 
+  const refreshLiquidity = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/pools/${poolAddress}/liquidity?cluster=${cluster}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as { liquidityUsdc?: number };
+      if (typeof data.liquidityUsdc === "number")
+        setPoolLiquidity(data.liquidityUsdc);
+    } catch {
+      // ignore — UI will fall back to position-only caps
+    }
+  }, [poolAddress, cluster]);
+
   useEffect(() => {
     refreshPosition();
-  }, [refreshPosition, refreshKey]);
+    refreshLiquidity();
+  }, [refreshPosition, refreshLiquidity, refreshKey]);
 
   const refreshBalance = useCallback(async () => {
     if (!address) {
@@ -138,10 +155,14 @@ export function DepositWidget({
   const numericAmount = Number(amount);
   const validAmount =
     Number.isFinite(numericAmount) && numericAmount > 0 ? numericAmount : 0;
+  const withdrawableCap = useMemo(() => {
+    if (poolLiquidity === null) return myDeposited;
+    return Math.min(myDeposited, poolLiquidity);
+  }, [myDeposited, poolLiquidity]);
   const overBalance =
     mode === "deposit" && balance !== null && validAmount > balance;
   const overPosition =
-    mode === "withdraw" && validAmount > myDeposited && myDeposited > 0;
+    mode === "withdraw" && validAmount > withdrawableCap + 1e-6;
 
   async function handleDeposit() {
     if (!requireWallet() || !address || !signAndSendTransaction) return;
@@ -236,11 +257,10 @@ export function DepositWidget({
       });
       return;
     }
-    if (!relayerAuthorized) {
+    if (poolLiquidity !== null && validAmount > poolLiquidity + 1e-6) {
       setStatus({
         phase: "error",
-        message:
-          "Manager has not enabled instant withdrawals on this pool yet. Ask them to authorize the relayer from their dashboard.",
+        message: `Only ${poolLiquidity.toFixed(2)} USDC is currently liquid in the pool; the rest is in open Phoenix positions. Try a smaller amount or wait for trades to settle.`,
       });
       return;
     }
@@ -380,7 +400,7 @@ export function DepositWidget({
         />
         <div className="flex flex-wrap gap-2 pt-2">
           {[25, 50, 75, 100].map((pct) => {
-            const cap = mode === "deposit" ? balance ?? 0 : myDeposited;
+            const cap = mode === "deposit" ? balance ?? 0 : withdrawableCap;
             const value = (cap * pct) / 100;
             const enabled = cap > 0;
             return (
@@ -412,26 +432,28 @@ export function DepositWidget({
         </div>
         <p>
           Deposits land in the manager&apos;s USDC account so they can route
-          Phoenix orders. Withdrawals are then refunded directly to your
-          wallet.
+          Phoenix orders. Withdraw anytime — you&apos;ll receive your share
+          of the liquid USDC balance directly to your wallet, capped at your
+          deposit.
         </p>
-        {relayerAuthorized ? (
-          <div className="flex items-start gap-1.5 text-positive">
-            <Zap className="h-3 w-3 mt-0.5 shrink-0" />
-            <p>
-              <span className="font-semibold">Instant withdrawals enabled.</span>{" "}
-              The manager has authorized a platform relayer to refund users
-              up to their tracked deposit balance — no approval required.
-              Manager retains the right to revoke this at any time.
-            </p>
-          </div>
-        ) : (
+        {relayerAuthorized === false && (
           <div className="flex items-start gap-1.5 text-accent">
             <ShieldAlert className="h-3 w-3 mt-0.5 shrink-0" />
             <p>
-              Manager-custodied. Until the manager enables instant withdrawals
-              from their dashboard, you can deposit but withdrawals require
-              their signature.
+              This pool launched before instant withdrawals were automatic.
+              The manager needs to complete a one-time setup before refunds
+              can be routed.
+            </p>
+          </div>
+        )}
+        {relayerAuthorized !== false && (
+          <div className="flex items-start gap-1.5 text-positive">
+            <Zap className="h-3 w-3 mt-0.5 shrink-0" />
+            <p>
+              <span className="font-semibold">Instant withdrawals.</span>{" "}
+              Refunds clear in seconds against the liquid pool balance — no
+              approval steps. Funds locked in open Phoenix trades become
+              withdrawable as positions settle.
             </p>
           </div>
         )}
@@ -464,8 +486,7 @@ export function DepositWidget({
           !validAmount ||
           overBalance ||
           overPosition ||
-          (mode === "deposit" && !managerIsLive) ||
-          (mode === "withdraw" && !relayerAuthorized)
+          (mode === "deposit" && !managerIsLive)
         }
         onClick={() => (connected ? submit() : connect())}
       >
@@ -481,9 +502,7 @@ export function DepositWidget({
                 : "Confirming on Solana…"
             : mode === "deposit"
               ? `Deposit ${validAmount ? validAmount.toFixed(2) : ""} USDC`
-              : relayerAuthorized
-                ? `Withdraw ${validAmount ? validAmount.toFixed(2) : ""} USDC instantly`
-                : "Withdrawals not enabled yet"}
+              : `Withdraw ${validAmount ? validAmount.toFixed(2) : ""} USDC instantly`}
       </Button>
 
       {status.phase === "error" && (
@@ -536,14 +555,33 @@ export function DepositWidget({
         </motion.div>
       )}
 
-      {address && myDeposited > 0 && (
+      {(address && myDeposited > 0) || poolLiquidity !== null ? (
         <div className="border-t border-border/60 pt-3 mt-2 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-muted">Your position</span>
-            <span className="font-semibold tabular-nums">
-              {formatUsd(myDeposited)}
-            </span>
-          </div>
+          {address && myDeposited > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted">Your position</span>
+              <span className="font-semibold tabular-nums">
+                {formatUsd(myDeposited)}
+              </span>
+            </div>
+          )}
+          {poolLiquidity !== null && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted">Pool liquid balance</span>
+              <span className="tabular-nums">{formatUsd(poolLiquidity)}</span>
+            </div>
+          )}
+          {address &&
+            mode === "withdraw" &&
+            myDeposited > 0 &&
+            poolLiquidity !== null && (
+              <div className="flex items-center justify-between text-positive">
+                <span>Available to withdraw now</span>
+                <span className="font-semibold tabular-nums">
+                  {formatUsd(withdrawableCap)}
+                </span>
+              </div>
+            )}
           {myDeposits.length > 0 && (
             <Link
               href="/portfolio"
@@ -553,7 +591,7 @@ export function DepositWidget({
             </Link>
           )}
         </div>
-      )}
+      ) : null}
     </Card>
   );
 }

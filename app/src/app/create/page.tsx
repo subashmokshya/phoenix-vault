@@ -89,9 +89,29 @@ export default function CreatePoolPage() {
       const { address: poolAddress, vaultIndex } =
         await pickVaultAddress(managerPubkey);
 
+      // Resolve the platform refund relayer so we can bundle the SPL approve
+      // into the launch tx — no separate "enable withdrawals" step required.
+      let relayerDelegate: PublicKey | null = null;
+      try {
+        const r = await fetch("/api/relayer/info", { cache: "no-store" });
+        if (r.ok) {
+          const data = (await r.json()) as {
+            configured?: boolean;
+            publicKey?: string;
+          };
+          if (data.configured && data.publicKey) {
+            relayerDelegate = new PublicKey(data.publicKey);
+          }
+        }
+      } catch {
+        // best-effort; if missing we still launch the pool, just without
+        // instant-withdrawal authorization baked in.
+      }
+
       const result = await buildAndSendLaunchTx({
         payer: managerPubkey,
         signAndSend: signAndSendTransaction,
+        relayerDelegate,
         payload: {
           app: "phoenix-vault",
           v: 1,
@@ -139,6 +159,27 @@ export default function CreatePoolPage() {
         }
       } catch (e) {
         registryError = e instanceof Error ? e.message : String(e);
+      }
+
+      // If the launch tx bundled the approve, mirror it into the registry so
+      // depositors immediately see instant withdrawals as enabled.
+      if (result.relayerAuthorized && registry === "saved") {
+        try {
+          await fetch("/api/relayer/authorize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              poolAddress,
+              authorized: true,
+              cluster: result.cluster,
+              signature: result.signature,
+            }),
+          });
+        } catch {
+          // Non-fatal; the manage dashboard can recover by running setup
+          // again later. The on-chain approve is already in effect.
+        }
       }
 
       setLaunch({

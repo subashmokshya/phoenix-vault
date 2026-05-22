@@ -6,7 +6,6 @@ import {
   ExternalLink,
   Loader2,
   ShieldCheck,
-  ShieldOff,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -18,10 +17,7 @@ import {
   clusterFromRpc,
   type ClusterKind,
 } from "@/lib/spl/usdc";
-import {
-  sendApproveRelayer,
-  sendRevokeRelayer,
-} from "@/lib/spl/approve";
+import { sendApproveRelayer } from "@/lib/spl/approve";
 import { primaryRpcUrl } from "@/lib/wallet/rpc";
 import { cn, formatUsd, shortAddress } from "@/lib/utils";
 
@@ -48,13 +44,19 @@ type CompletedWithdrawal = {
   cluster: string;
 };
 
-type Action =
+type SetupState =
   | { phase: "idle" }
-  | { phase: "signing"; mode: "approve" | "revoke" }
-  | { phase: "saving"; mode: "approve" | "revoke" }
-  | { phase: "done"; mode: "approve" | "revoke"; signature: string; explorerUrl: string }
+  | { phase: "signing" }
+  | { phase: "saving" }
+  | { phase: "done"; signature: string; explorerUrl: string }
   | { phase: "error"; message: string };
 
+/**
+ * For new pools the SPL approve is bundled into the launch tx, so this panel
+ * only ever surfaces the "enabled" status and the recent-withdrawals log.
+ * For legacy pools that launched before bundling existed, it offers a one-tap
+ * setup that signs the missing approve and back-fills the registry flag.
+ */
 export function InstantWithdrawalsAdmin({
   poolAddress,
   managerAddress,
@@ -64,7 +66,7 @@ export function InstantWithdrawalsAdmin({
 }: Props) {
   const [info, setInfo] = useState<RelayerInfo | null>(null);
   const [history, setHistory] = useState<CompletedWithdrawal[]>([]);
-  const [action, setAction] = useState<Action>({ phase: "idle" });
+  const [setup, setSetup] = useState<SetupState>({ phase: "idle" });
   const [refreshKey, setRefreshKey] = useState(0);
 
   const { signAndSendTransaction } = useWallet();
@@ -87,7 +89,8 @@ export function InstantWithdrawalsAdmin({
         if (active) setInfo(d as RelayerInfo);
       })
       .catch(() => {
-        if (active) setInfo({ configured: false, error: "Failed to fetch relayer info" });
+        if (active)
+          setInfo({ configured: false, error: "Failed to fetch relayer info" });
       });
     return () => {
       active = false;
@@ -96,10 +99,9 @@ export function InstantWithdrawalsAdmin({
 
   const loadHistory = useCallback(async () => {
     try {
-      const res = await fetch(
-        `/api/withdrawals/history/${poolAddress}`,
-        { cache: "no-store" }
-      );
+      const res = await fetch(`/api/withdrawals/history/${poolAddress}`, {
+        cache: "no-store",
+      });
       if (!res.ok) return;
       const data = (await res.json()) as { withdrawals?: CompletedWithdrawal[] };
       setHistory(data.withdrawals ?? []);
@@ -117,16 +119,16 @@ export function InstantWithdrawalsAdmin({
     return () => clearInterval(t);
   }, []);
 
-  async function authorize() {
+  async function completeSetup() {
     if (!managerPubkey || !signAndSendTransaction) return;
     if (!info?.configured || !info.publicKey) {
-      setAction({
+      setSetup({
         phase: "error",
-        message: "Relayer is not configured on the server.",
+        message: "Refund relayer is not configured on the server.",
       });
       return;
     }
-    setAction({ phase: "signing", mode: "approve" });
+    setSetup({ phase: "signing" });
     try {
       const relayerPk = new PublicKey(info.publicKey);
       const result = await sendApproveRelayer({
@@ -135,7 +137,7 @@ export function InstantWithdrawalsAdmin({
         poolAddress,
         signAndSend: signAndSendTransaction,
       });
-      setAction({ phase: "saving", mode: "approve" });
+      setSetup({ phase: "saving" });
       const res = await fetch("/api/relayer/authorize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -149,204 +151,109 @@ export function InstantWithdrawalsAdmin({
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(err.error ?? "Failed to record authorization");
+        throw new Error(err.error ?? "Failed to record setup");
       }
-      setAction({
+      setSetup({
         phase: "done",
-        mode: "approve",
         signature: result.signature,
         explorerUrl: result.explorerUrl,
       });
       onAuthorizationChange?.(true);
     } catch (e) {
-      setAction({
+      setSetup({
         phase: "error",
-        message:
-          e instanceof Error ? e.message : "Authorization failed unexpectedly",
+        message: e instanceof Error ? e.message : "Setup failed unexpectedly",
       });
     }
   }
 
-  async function revoke() {
-    if (!managerPubkey || !signAndSendTransaction) return;
-    setAction({ phase: "signing", mode: "revoke" });
-    try {
-      const result = await sendRevokeRelayer({
-        manager: managerPubkey,
-        poolAddress,
-        signAndSend: signAndSendTransaction,
-      });
-      setAction({ phase: "saving", mode: "revoke" });
-      const res = await fetch("/api/relayer/authorize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          poolAddress,
-          authorized: false,
-          cluster: result.cluster === "unknown" ? cluster : result.cluster,
-          signature: result.signature,
-        }),
-      });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(err.error ?? "Failed to record revocation");
-      }
-      setAction({
-        phase: "done",
-        mode: "revoke",
-        signature: result.signature,
-        explorerUrl: result.explorerUrl,
-      });
-      onAuthorizationChange?.(false);
-    } catch (e) {
-      setAction({
-        phase: "error",
-        message:
-          e instanceof Error ? e.message : "Revocation failed unexpectedly",
-      });
-    }
-  }
-
-  const busy =
-    action.phase === "signing" || action.phase === "saving";
+  const busy = setup.phase === "signing" || setup.phase === "saving";
+  const showLegacySetup =
+    isManager && !relayerAuthorized && info?.configured && !!info.publicKey;
 
   return (
     <Card className="space-y-4">
       <header className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Wallet className="h-4 w-4 text-accent" />
-          <h3 className="font-semibold text-sm">Instant withdrawals</h3>
+          <h3 className="font-semibold text-sm">Withdrawals</h3>
           {relayerAuthorized ? (
             <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-positive/15 text-positive">
               <ShieldCheck className="h-3 w-3" />
-              enabled
+              instant
+            </span>
+          ) : info?.configured ? (
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-accent/15 text-accent">
+              setup pending
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-accent/15 text-accent">
-              <ShieldOff className="h-3 w-3" />
-              disabled
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-border/40 text-muted">
+              relayer offline
             </span>
           )}
         </div>
       </header>
 
-      <div className="text-[11px] text-muted leading-relaxed space-y-1 border border-border/60 rounded-xl p-3 bg-surface-2/40">
-        <p className="text-foreground inline-flex items-center gap-1.5">
-          <Zap className="h-3 w-3 text-accent" />
-          <span className="font-semibold">
-            How it works
-          </span>
-        </p>
-        <p>
-          Users withdraw instantly without your approval. You sign a one-time
-          SPL token <span className="font-mono">approve</span> granting a
-          platform-controlled refund relayer permission to spend USDC from
-          your token account on behalf of depositors.
-        </p>
-        <p>
-          The server enforces a hard cap per user — it can only refund up to
-          their tracked deposit balance. You can revoke the delegation any
-          time with one click.
-        </p>
-        {info?.configured && info.publicKey ? (
-          <p className="text-[11px]">
-            Relayer:{" "}
-            <span className="font-mono">{shortAddress(info.publicKey, 6)}</span>
-          </p>
-        ) : (
-          <p className="text-negative">
-            {info?.error ??
-              "Relayer not yet configured on the server — instant withdrawals are unavailable."}
-          </p>
-        )}
-      </div>
+      <p className="text-[11px] text-muted leading-relaxed">
+        Depositors withdraw instantly up to the liquid USDC balance in the
+        manager&apos;s wallet — funds locked in open Phoenix orders are
+        excluded automatically. The refund relayer can only return money that
+        was previously deposited; everything else stays with you for trading.
+      </p>
 
-      {isManager && info?.configured ? (
-        <div className="flex gap-2">
-          {!relayerAuthorized ? (
-            <Button
-              className="flex-1"
-              size="sm"
-              disabled={busy}
-              onClick={() => void authorize()}
-            >
-              {action.phase === "signing" && action.mode === "approve" ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                  Sign in wallet…
-                </>
-              ) : action.phase === "saving" && action.mode === "approve" ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                  Recording…
-                </>
-              ) : (
-                <>
-                  <Zap className="h-3.5 w-3.5 mr-1.5" />
-                  Enable instant withdrawals
-                </>
-              )}
-            </Button>
-          ) : (
-            <Button
-              className="flex-1"
-              size="sm"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => void revoke()}
-            >
-              {action.phase === "signing" && action.mode === "revoke" ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                  Sign revoke…
-                </>
-              ) : action.phase === "saving" && action.mode === "revoke" ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                  Recording…
-                </>
-              ) : (
-                <>
-                  <ShieldOff className="h-3.5 w-3.5 mr-1.5" />
-                  Revoke authorization
-                </>
-              )}
-            </Button>
-          )}
+      {showLegacySetup && (
+        <div className="rounded-xl border border-accent/40 bg-accent/10 text-accent p-3 space-y-2 text-[11px]">
+          <p>
+            This pool was launched before instant withdrawals were bundled
+            into the launch transaction. One-time signature finishes setup.
+          </p>
+          <Button
+            size="sm"
+            className="w-full"
+            disabled={busy}
+            onClick={() => void completeSetup()}
+          >
+            {setup.phase === "signing" ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                Sign in wallet…
+              </>
+            ) : setup.phase === "saving" ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                Recording…
+              </>
+            ) : (
+              <>
+                <Zap className="h-3.5 w-3.5 mr-1.5" />
+                Finish setup
+              </>
+            )}
+          </Button>
         </div>
-      ) : !isManager ? (
-        <p className="text-[11px] text-muted">
-          Connect with the manager wallet to authorize or revoke instant
-          withdrawals.
-        </p>
-      ) : null}
+      )}
 
-      {action.phase === "done" && (
+      {setup.phase === "done" && (
         <motion.div
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
           className="text-xs flex items-center justify-between rounded-xl bg-positive/10 text-positive border border-positive/40 px-3 py-2"
         >
-          <span>
-            {action.mode === "approve"
-              ? "Instant withdrawals are live."
-              : "Authorization revoked."}
-          </span>
+          <span>Instant withdrawals are live.</span>
           <a
-            href={action.explorerUrl}
+            href={setup.explorerUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="font-mono hover:underline inline-flex items-center gap-1"
           >
-            {action.signature.slice(0, 8)}…
+            {setup.signature.slice(0, 8)}…
             <ExternalLink className="h-3 w-3" />
           </a>
         </motion.div>
       )}
 
-      {action.phase === "error" && (
-        <p className="text-xs text-negative">{action.message}</p>
+      {setup.phase === "error" && (
+        <p className="text-xs text-negative">{setup.message}</p>
       )}
 
       {history.length > 0 && (
