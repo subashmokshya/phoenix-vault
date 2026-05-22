@@ -546,45 +546,47 @@ export default function ManagePoolPage() {
         </div>
       </div>
 
-      {headerStats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <KpiCard
-            label="Collateral"
-            value={formatUsd(headerStats.collateral)}
-          />
-          <KpiCard
-            label="Unrealized PnL"
-            value={
-              <span
-                className={cn(
-                  headerStats.unrealizedPnl >= 0
-                    ? "text-positive"
-                    : "text-negative"
-                )}
-              >
-                {headerStats.unrealizedPnl >= 0 ? "+" : ""}
-                {formatUsd(headerStats.unrealizedPnl)}
-              </span>
-            }
-          />
-          <KpiCard
-            label="Open Positions"
-            value={String(headerStats.positions.length)}
-          />
-          <KpiCard
-            label="Pending Proposals"
-            value={
-              <span
-                className={cn(
-                  queue.length > 0 ? "text-accent" : "text-foreground"
-                )}
-              >
-                {queue.length}
-              </span>
-            }
-          />
-        </div>
-      )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <KpiCard
+          label="Pool AUM"
+          value={formatUsd(pool.aum ?? 0)}
+          sub={`${pool.depositorCount ?? 0} depositor${(pool.depositorCount ?? 0) === 1 ? "" : "s"}`}
+        />
+        <KpiCard
+          label="Collateral"
+          value={formatUsd(headerStats?.collateral ?? 0)}
+          sub="on Phoenix"
+        />
+        <KpiCard
+          label="Unrealized PnL"
+          value={
+            <span
+              className={cn(
+                (headerStats?.unrealizedPnl ?? 0) >= 0
+                  ? "text-positive"
+                  : "text-negative"
+              )}
+            >
+              {(headerStats?.unrealizedPnl ?? 0) >= 0 ? "+" : ""}
+              {formatUsd(headerStats?.unrealizedPnl ?? 0)}
+            </span>
+          }
+          sub={`${headerStats?.positions.length ?? 0} open`}
+        />
+        <KpiCard
+          label="Pending Proposals"
+          value={
+            <span
+              className={cn(
+                queue.length > 0 ? "text-accent" : "text-foreground"
+              )}
+            >
+              {queue.length}
+            </span>
+          }
+          sub={spec.autoExecute ? "auto-routed" : "manual approval"}
+        />
+      </div>
 
       <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 items-start">
         <div className="space-y-6">
@@ -705,13 +707,24 @@ export default function ManagePoolPage() {
   );
 }
 
-function KpiCard({ label, value }: { label: string; value: React.ReactNode }) {
+function KpiCard({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: React.ReactNode;
+  sub?: string;
+}) {
   return (
     <Card className="py-3 px-4">
       <div className="text-[11px] uppercase tracking-wider text-muted">
         {label}
       </div>
       <div className="text-lg font-semibold tabular-nums mt-1">{value}</div>
+      {sub && (
+        <div className="text-[10px] text-muted mt-0.5">{sub}</div>
+      )}
     </Card>
   );
 }

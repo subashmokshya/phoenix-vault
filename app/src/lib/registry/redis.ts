@@ -281,6 +281,85 @@ export async function getPoolWithdrawals(
     .slice(0, limit);
 }
 
+export type PoolAggregates = {
+  totalDeposited: number;
+  totalWithdrawn: number;
+  netAum: number;
+  depositorCount: number;
+  lastDepositTs: number | null;
+};
+
+/**
+ * Compute live aggregates for a pool by scanning the ledger sets.
+ * Cheap for the deposit volumes we expect (single-digit thousands of sigs)
+ * and avoids needing a write side-channel on every deposit/withdrawal.
+ */
+export async function getPoolAggregates(
+  poolAddress: string
+): Promise<PoolAggregates> {
+  const redis = getRegistry();
+  if (!redis) {
+    return {
+      totalDeposited: 0,
+      totalWithdrawn: 0,
+      netAum: 0,
+      depositorCount: 0,
+      lastDepositTs: null,
+    };
+  }
+
+  const [depositSigs, withdrawSigs] = await Promise.all([
+    redis.smembers(POOL_DEPOSIT_SET(poolAddress)),
+    redis.smembers(POOL_WITHDRAW_SET(poolAddress)),
+  ]);
+
+  const depositRows: LedgerDeposit[] = depositSigs.length
+    ? (
+        (await redis.mget<LedgerDeposit[]>(
+          ...depositSigs.map(DEPOSIT_KEY)
+        )) ?? []
+      ).filter((r): r is LedgerDeposit => Boolean(r))
+    : [];
+
+  const withdrawRows: LedgerWithdrawal[] = withdrawSigs.length
+    ? (
+        (await redis.mget<LedgerWithdrawal[]>(
+          ...withdrawSigs.map(WITHDRAW_KEY)
+        )) ?? []
+      ).filter((r): r is LedgerWithdrawal => Boolean(r))
+    : [];
+
+  let totalDeposited = 0;
+  let lastDepositTs: number | null = null;
+  const perUser = new Map<string, number>();
+  for (const d of depositRows) {
+    totalDeposited += Number(d.amountUsdc);
+    if (lastDepositTs === null || d.ts > lastDepositTs) lastDepositTs = d.ts;
+    perUser.set(d.depositor, (perUser.get(d.depositor) ?? 0) + Number(d.amountUsdc));
+  }
+  let totalWithdrawn = 0;
+  for (const w of withdrawRows) {
+    totalWithdrawn += Number(w.amountUsdc);
+    perUser.set(
+      w.depositor,
+      (perUser.get(w.depositor) ?? 0) - Number(w.amountUsdc)
+    );
+  }
+
+  let depositorCount = 0;
+  perUser.forEach((v) => {
+    if (v > 0.0000001) depositorCount += 1;
+  });
+
+  return {
+    totalDeposited,
+    totalWithdrawn,
+    netAum: Math.max(0, totalDeposited - totalWithdrawn),
+    depositorCount,
+    lastDepositTs,
+  };
+}
+
 export async function setRelayerAuthorization(
   poolAddress: string,
   data: {

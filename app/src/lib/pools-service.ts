@@ -2,6 +2,7 @@ import { desc, eq, and, gte, sql } from "drizzle-orm";
 import { getDb, schema } from "./db";
 import type { PoolCard } from "./mock-data";
 import {
+  getPoolAggregates,
   getPoolFromRegistry,
   isRegistryConfigured,
   listPoolsFromRegistry,
@@ -10,6 +11,25 @@ import {
 
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 const HAS_REGISTRY = isRegistryConfigured();
+
+async function decoratePool(card: PoolCard): Promise<PoolCard> {
+  if (!HAS_REGISTRY) return card;
+  try {
+    const agg = await getPoolAggregates(card.address);
+    return {
+      ...card,
+      aum: agg.netAum,
+      depositorCount: agg.depositorCount,
+    };
+  } catch {
+    return card;
+  }
+}
+
+async function decoratePools(cards: PoolCard[]): Promise<PoolCard[]> {
+  if (!HAS_REGISTRY || cards.length === 0) return cards;
+  return Promise.all(cards.map(decoratePool));
+}
 
 export async function listPools(opts?: {
   sort?: "pnl7d" | "pnl30d" | "aum" | "newest";
@@ -22,14 +42,16 @@ export async function listPools(opts?: {
   // pools when no Postgres is provisioned. If Postgres is also wired up we
   // merge both sources, de-duped by address with registry winning.
   if (HAS_REGISTRY) {
-    const registryPools = (
-      await listPoolsFromRegistry({
-        manager: opts?.manager,
-        strategy: opts?.strategy,
-        featured: opts?.featured,
-        limit: opts?.limit,
-      })
-    ).map(poolToCard);
+    const registryPools = await decoratePools(
+      (
+        await listPoolsFromRegistry({
+          manager: opts?.manager,
+          strategy: opts?.strategy,
+          featured: opts?.featured,
+          limit: opts?.limit,
+        })
+      ).map(poolToCard)
+    );
     if (!HAS_DB) return registryPools;
 
     const dbPools = await listFromDb(opts);
@@ -73,7 +95,7 @@ async function listFromDb(opts?: {
 export async function getPool(address: string): Promise<PoolCard | null> {
   if (HAS_REGISTRY) {
     const reg = await getPoolFromRegistry(address);
-    if (reg) return poolToCard(reg);
+    if (reg) return decoratePool(poolToCard(reg));
   }
   if (!HAS_DB) return null;
   const db = getDb();
@@ -82,7 +104,7 @@ export async function getPool(address: string): Promise<PoolCard | null> {
     .from(schema.pools)
     .where(eq(schema.pools.address, address))
     .limit(1);
-  return row ? mapDbPoolToCard(row) : null;
+  return row ? decoratePool(mapDbPoolToCard(row)) : null;
 }
 
 export async function getPoolsByManager(manager: string): Promise<PoolCard[]> {
