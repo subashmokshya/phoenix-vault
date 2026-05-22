@@ -45,6 +45,8 @@ type BuildResponse =
       side: "buy" | "sell";
       quantity: number;
       referencePrice: number;
+      collateralUsdc: number;
+      estimatedLiquidationPriceUsd: number | null;
       tpTrigger?: number;
       slTrigger?: number;
       instructions: SerializedInstruction[];
@@ -55,6 +57,7 @@ type BuildResponse =
       source: "phoenix" | "client";
       error: string;
       detail?: string;
+      status?: number;
     };
 
 export type PhoenixOrderOutcome =
@@ -68,6 +71,8 @@ export type PhoenixOrderOutcome =
       side: "buy" | "sell";
       quantity: number;
       referencePrice: number;
+      collateralUsdc: number;
+      estimatedLiquidationPriceUsd: number | null;
       tpTrigger?: number;
       slTrigger?: number;
     }
@@ -120,12 +125,13 @@ export async function placePhoenixOrder(
   }
 
   if (!build.ok) {
-    // The most common case: Phoenix beta is gated — surface a clear message but distinguish blocked vs invalid.
     const blocked =
       build.source === "phoenix" &&
-      /forbidden|unauthorized|invite|access|beta|403|401/i.test(
-        build.detail ?? build.error ?? ""
-      );
+      (build.status === 401 ||
+        build.status === 403 ||
+        /forbidden|unauthorized|invite|access|beta|whitelist/i.test(
+          (build.detail ?? "") + " " + (build.error ?? "")
+        ));
     return {
       ok: false,
       kind: blocked ? "blocked" : "rejected",
@@ -172,6 +178,8 @@ export async function placePhoenixOrder(
       side: build.side,
       quantity: build.quantity,
       referencePrice: build.referencePrice,
+      collateralUsdc: build.collateralUsdc,
+      estimatedLiquidationPriceUsd: build.estimatedLiquidationPriceUsd,
       tpTrigger: build.tpTrigger,
       slTrigger: build.slTrigger,
     };

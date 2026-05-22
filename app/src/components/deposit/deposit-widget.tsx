@@ -20,12 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 import { useWallet } from "@/lib/wallet/context";
-import {
-  clusterFromRpc,
-  getUsdcBalance,
-  sendUsdcTransfer,
-  type ClusterKind,
-} from "@/lib/spl/usdc";
+import { clusterFromRpc, type ClusterKind } from "@/lib/spl/usdc";
+import { getUsdcBalance, sendUsdcTransfer } from "@/lib/spl/usdc-client";
 import {
   appendDeposit,
   appendWithdrawal,

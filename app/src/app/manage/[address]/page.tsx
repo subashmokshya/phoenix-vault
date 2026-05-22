@@ -15,13 +15,17 @@ import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
 import { StrategyCopilot } from "@/components/strategy/strategy-copilot";
 import { ProposedTrades } from "@/components/strategy/proposed-trades";
+import { StrategyRunnerPanel } from "@/components/strategy/strategy-runner-panel";
+import { ManualOrderPanel } from "@/components/strategy/manual-order-panel";
 import { InstantWithdrawalsAdmin } from "@/components/deposit/instant-withdrawals-admin";
 import {
   useLivePositions,
   useLiveTrades,
 } from "@/hooks/use-phoenix-live";
+import { useStrategyRunner } from "@/hooks/use-strategy-runner";
 import {
   DEFAULT_SPEC,
+  type Market,
   type ProposedTrade,
   type StrategySpec,
 } from "@/lib/ai/strategy-ops-tools";
@@ -160,7 +164,10 @@ export default function ManagePoolPage() {
   }, [address, approved, hydrated]);
 
   const approveTrade = useCallback(
-    async (t: ProposedTrade) => {
+    async (
+      t: ProposedTrade,
+      opts?: { source?: "manual" | "ai" | "runner" }
+    ) => {
       if (!isManager || !walletAddress || !signAndSendTransaction) {
         setRouteFlash({
           kind: "err",
@@ -177,6 +184,7 @@ export default function ManagePoolPage() {
           kind: "err",
           text: `Reference price for ${t.market} unavailable yet — wait for the markets snapshot and retry.`,
         });
+        setRoutingId(null);
         return;
       }
       const leverage = Math.max(1, Math.round((spec.leverageMin + spec.leverageMax) / 2));
@@ -185,6 +193,7 @@ export default function ManagePoolPage() {
         approvedAt: Date.now(),
         status: "submitting",
         referencePrice,
+        source: opts?.source ?? "ai",
       };
       setQueue((q) => q.filter((x) => x.id !== t.id));
       setApproved((a) => [pendingEntry, ...a]);
@@ -218,6 +227,9 @@ export default function ManagePoolPage() {
                     explorerUrl: outcome.explorerUrl,
                     quantity: outcome.quantity,
                     referencePrice: outcome.referencePrice,
+                    collateralUsdc: outcome.collateralUsdc,
+                    estimatedLiquidationPriceUsd:
+                      outcome.estimatedLiquidationPriceUsd,
                     tpTrigger: outcome.tpTrigger,
                     slTrigger: outcome.slTrigger,
                   }
@@ -290,13 +302,171 @@ export default function ManagePoolPage() {
     setQueue((q) => q.filter((x) => x.id !== id));
   }
 
-  function proposeTrade(t: ProposedTrade) {
-    if (spec.autoExecute && isManager) {
-      void approveTrade(t);
-    } else {
-      setQueue((q) => [t, ...q]);
-    }
-  }
+  const proposeTrade = useCallback(
+    (t: ProposedTrade, opts?: { source?: "manual" | "ai" | "runner" }) => {
+      const source = opts?.source ?? "ai";
+      if (spec.autoExecute && isManager && !spec.paused) {
+        void approveTrade(t, { source });
+      } else {
+        setQueue((q) => [t, ...q]);
+      }
+    },
+    [spec.autoExecute, spec.paused, isManager, approveTrade]
+  );
+
+  const aumEstimate = useMemo(() => pool?.aum ?? 0, [pool?.aum]);
+
+  const runner = useStrategyRunner({
+    poolAddress: address,
+    poolName: pool?.name ?? "",
+    strategyTag: pool?.strategyTag ?? "",
+    spec,
+    positions: positions.data?.positions ?? [],
+    trades: trades.data ?? [],
+    prices: marketPrices,
+    aumEstimateUsd: aumEstimate,
+    callbacks: {
+      onProposeTrade: async (t) => {
+        await proposeTrade(t, { source: "runner" });
+      },
+    },
+  });
+
+  const placeManualOrder = useCallback(
+    async (input: {
+      market: Market;
+      side: "buy" | "sell";
+      sizeUsd: number;
+      leverage: number;
+    }) => {
+      if (!isManager || !walletAddress || !signAndSendTransaction) {
+        setRouteFlash({
+          kind: "err",
+          text: "Connect the manager wallet to route orders.",
+        });
+        return;
+      }
+      const refPrice = referencePriceFor(input.market);
+      if (!refPrice) {
+        setRouteFlash({
+          kind: "err",
+          text: `Reference price for ${input.market} unavailable yet.`,
+        });
+        return;
+      }
+      const tradeId = `manual-${Date.now()}`;
+      const pendingEntry: ApprovedTrade = {
+        id: tradeId,
+        market: input.market,
+        side: input.side,
+        sizeUsd: input.sizeUsd,
+        orderType: "market",
+        rationale: `Manual order placed by manager`,
+        confidence: "high",
+        createdAt: Date.now(),
+        approvedAt: Date.now(),
+        status: "submitting",
+        referencePrice: refPrice,
+        source: "manual",
+      };
+      setApproved((a) => [pendingEntry, ...a]);
+      setRoutingId(tradeId);
+      setRouteFlash(null);
+
+      try {
+        const outcome = await placePhoenixOrder(
+          {
+            authority: walletAddress,
+            market: input.market,
+            side: input.side,
+            orderType: "market",
+            sizeUsd: input.sizeUsd,
+            referencePrice: refPrice,
+            takeProfitPct: spec.takeProfitPct,
+            stopLossPct: spec.stopLossPct,
+            leverage: input.leverage,
+          },
+          signAndSendTransaction
+        );
+
+        if (outcome.ok) {
+          setApproved((a) =>
+            a.map((row) =>
+              row.id === tradeId
+                ? {
+                    ...row,
+                    status: "filled",
+                    mode: "live",
+                    signature: outcome.signature,
+                    explorerUrl: outcome.explorerUrl,
+                    quantity: outcome.quantity,
+                    referencePrice: outcome.referencePrice,
+                    collateralUsdc: outcome.collateralUsdc,
+                    estimatedLiquidationPriceUsd:
+                      outcome.estimatedLiquidationPriceUsd,
+                    tpTrigger: outcome.tpTrigger,
+                    slTrigger: outcome.slTrigger,
+                  }
+                : row
+            )
+          );
+          setRouteFlash({
+            kind: "ok",
+            text: `Routed manual ${input.side.toUpperCase()} ${input.market}.`,
+            sig: outcome.signature,
+            explorerUrl: outcome.explorerUrl,
+          });
+        } else {
+          const detail = outcome.detail ? ` — ${outcome.detail}` : "";
+          setApproved((a) =>
+            a.map((row) =>
+              row.id === tradeId
+                ? {
+                    ...row,
+                    status: "rejected",
+                    mode: "live",
+                    error: `${outcome.error}${detail}`,
+                  }
+                : row
+            )
+          );
+          setRouteFlash({
+            kind: outcome.kind === "blocked" ? "blocked" : "err",
+            text:
+              outcome.kind === "blocked"
+                ? `Phoenix beta access required — manual order not routed.${detail}`
+                : `${outcome.error}${detail}`,
+          });
+        }
+      } catch (e) {
+        setApproved((a) =>
+          a.map((row) =>
+            row.id === tradeId
+              ? {
+                  ...row,
+                  status: "rejected",
+                  error: e instanceof Error ? e.message : String(e),
+                }
+              : row
+          )
+        );
+        setRouteFlash({
+          kind: "err",
+          text: e instanceof Error ? e.message : "Order failed",
+        });
+      } finally {
+        setRoutingId(null);
+      }
+    },
+    [
+      isManager,
+      walletAddress,
+      signAndSendTransaction,
+      referencePriceFor,
+      spec.takeProfitPct,
+      spec.stopLossPct,
+    ]
+  );
 
   if (loading) {
     return (
@@ -466,6 +636,31 @@ export default function ManagePoolPage() {
               </button>
             </div>
           )}
+          <StrategyRunnerPanel
+            runner={runner}
+            autoExecute={spec.autoExecute}
+            paused={spec.paused}
+            disabled={!isManager}
+            disabledReason={
+              !connected
+                ? "Connect wallet to arm the strategy runner."
+                : !isManager
+                  ? "Manager wallet required."
+                  : undefined
+            }
+          />
+          <ManualOrderPanel
+            prices={marketPrices}
+            disabled={!isManager}
+            disabledReason={
+              !connected
+                ? "Connect wallet to place orders."
+                : !isManager
+                  ? "Manager wallet required."
+                  : undefined
+            }
+            onPlace={placeManualOrder}
+          />
           <ProposedTrades
             trades={queue}
             onApprove={(t) => void approveTrade(t)}
@@ -492,7 +687,7 @@ export default function ManagePoolPage() {
               strategyTag={pool.strategyTag}
               spec={spec}
               onSpecChange={setSpec}
-              onPropose={proposeTrade}
+              onPropose={(t) => proposeTrade(t, { source: "ai" })}
               positions={positions.data?.positions ?? []}
               recentTrades={trades.data ?? []}
             />
@@ -551,8 +746,35 @@ function ApprovedTradesPanel({ approved }: { approved: ApprovedTrade[] }) {
                   <span className="text-[10px] text-muted">
                     ${t.sizeUsd.toLocaleString()} · {t.orderType}
                     {t.quantity ? ` · ${t.quantity.toFixed(4)}` : ""}
+                    {t.collateralUsdc
+                      ? ` · ${t.collateralUsdc.toFixed(2)} USDC collat`
+                      : ""}
                   </span>
+                  {t.source && (
+                    <span
+                      className={cn(
+                        "text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-full",
+                        t.source === "manual"
+                          ? "bg-accent/15 text-accent"
+                          : t.source === "runner"
+                            ? "bg-positive/15 text-positive"
+                            : "bg-surface-3 text-muted"
+                      )}
+                    >
+                      {t.source}
+                    </span>
+                  )}
                 </div>
+                {t.estimatedLiquidationPriceUsd ? (
+                  <div className="text-[10px] text-muted mt-0.5">
+                    est. liq{" "}
+                    <span className="text-negative">
+                      ${t.estimatedLiquidationPriceUsd.toFixed(
+                        t.estimatedLiquidationPriceUsd < 1 ? 6 : 2
+                      )}
+                    </span>
+                  </div>
+                ) : null}
                 {(t.tpTrigger || t.slTrigger) && (
                   <div className="text-[10px] text-muted mt-0.5">
                     {t.tpTrigger ? (

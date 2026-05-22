@@ -4,7 +4,10 @@ import { PhoenixHttpClient } from "@ellipsis-labs/rise";
 
 const PHOENIX_API_URL =
   process.env.NEXT_PUBLIC_PHOENIX_API_URL ?? "https://perp-api.phoenix.trade";
-const FLIGHT_BUILDER_AUTHORITY = process.env.PHOENIX_FLIGHT_BUILDER ?? undefined;
+const FLIGHT_BUILDER_AUTHORITY =
+  process.env.PHOENIX_FLIGHT_BUILDER && process.env.PHOENIX_FLIGHT_BUILDER.length > 0
+    ? process.env.PHOENIX_FLIGHT_BUILDER
+    : undefined;
 
 export type SerializedAccountMeta = {
   pubkey: string;
@@ -41,6 +44,8 @@ export type OrderBuildResult = {
   side: "buy" | "sell";
   quantity: number;
   referencePrice: number;
+  collateralUsdc: number;
+  estimatedLiquidationPriceUsd: number | null;
   tpTrigger?: number;
   slTrigger?: number;
   instructions: SerializedInstruction[];
@@ -52,6 +57,7 @@ export type OrderBuildError = {
   source: "phoenix" | "client";
   error: string;
   detail?: string;
+  status?: number;
 };
 
 const SOLANA_KIT_ROLE_WRITABLE = 1;
@@ -121,6 +127,54 @@ function makeClient() {
   return new PhoenixHttpClient({ apiUrl: PHOENIX_API_URL });
 }
 
+function classifyPhoenixError(e: unknown): {
+  status?: number;
+  error: string;
+  detail: string;
+} {
+  const detail = e instanceof Error ? e.message : String(e);
+  // PhoenixHttpError carries `.status` and `.body`
+  const status =
+    typeof e === "object" && e !== null && "status" in (e as object)
+      ? Number((e as { status?: unknown }).status)
+      : undefined;
+
+  if (status === 401 || status === 403) {
+    return {
+      status,
+      error:
+        "Phoenix beta access required — request access at phoenix.trade or whitelist this wallet.",
+      detail,
+    };
+  }
+  if (status === 404) {
+    return {
+      status,
+      error: "Phoenix market not found or trader endpoint missing.",
+      detail,
+    };
+  }
+  if (status === 422 || status === 400) {
+    return {
+      status,
+      error: "Phoenix rejected the order parameters.",
+      detail,
+    };
+  }
+  if (status && status >= 500) {
+    return {
+      status,
+      error: "Phoenix API is temporarily unavailable. Try again shortly.",
+      detail,
+    };
+  }
+  return {
+    status,
+    error: "Phoenix order build failed",
+    detail,
+  };
+}
+
 export async function buildPhoenixOrder(
   req: OrderBuildRequest
 ): Promise<OrderBuildResult | OrderBuildError> {
@@ -141,7 +195,7 @@ export async function buildPhoenixOrder(
 
   const quantity = quantityFromSize(req.sizeUsd, referencePrice);
   const leverage = Math.max(1, req.leverage ?? 3);
-  const transferAmount =
+  const collateralUsdc =
     req.transferUsdc !== undefined
       ? Math.max(0, req.transferUsdc)
       : Math.max(1, Number((req.sizeUsd / leverage).toFixed(2)));
@@ -186,14 +240,17 @@ export async function buildPhoenixOrder(
 
   try {
     const client = makeClient();
-    let rawInstructions: unknown[] = [];
+    let response:
+      | { instructions: unknown[]; estimatedLiquidationPriceUsd: number | null }
+      | undefined;
+
     if (req.orderType === "market") {
-      rawInstructions = await client.orders().placeIsolatedMarketOrder({
+      response = await client.orders().placeIsolatedMarketOrderEnhanced({
         authority: req.authority,
         symbol: req.market,
         side: sideLabel,
         quantity,
-        transferAmount,
+        transferAmount: collateralUsdc,
         pdaIndex: req.pdaIndex ?? 0,
         isReduceOnly: req.reduceOnly ?? false,
         flightBuilderAuthority: FLIGHT_BUILDER_AUTHORITY,
@@ -207,13 +264,13 @@ export async function buildPhoenixOrder(
           error: "limitPrice required for limit orders",
         };
       }
-      rawInstructions = await client.orders().placeIsolatedLimitOrder({
+      response = await client.orders().placeIsolatedLimitOrderEnhanced({
         authority: req.authority,
         symbol: req.market,
         side: sideLabel,
         price: req.limitPrice,
         quantity,
-        transferAmount,
+        transferAmount: collateralUsdc,
         pdaIndex: req.pdaIndex ?? 0,
         isReduceOnly: req.reduceOnly ?? false,
         flightBuilderAuthority: FLIGHT_BUILDER_AUTHORITY,
@@ -221,6 +278,7 @@ export async function buildPhoenixOrder(
       });
     }
 
+    const rawInstructions = response?.instructions ?? [];
     const instructions = rawInstructions
       .filter((ix): ix is RawInstruction => Boolean(ix && typeof ix === "object"))
       .map(serializeInstruction);
@@ -240,18 +298,21 @@ export async function buildPhoenixOrder(
       side: req.side,
       quantity,
       referencePrice,
+      collateralUsdc,
+      estimatedLiquidationPriceUsd: response?.estimatedLiquidationPriceUsd ?? null,
       tpTrigger,
       slTrigger,
       instructions,
       feePayer: req.authority,
     };
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+    const { status, error, detail } = classifyPhoenixError(e);
     return {
       ok: false,
       source: "phoenix",
-      error: "Phoenix order build failed",
-      detail: message,
+      error,
+      detail,
+      status,
     };
   }
 }

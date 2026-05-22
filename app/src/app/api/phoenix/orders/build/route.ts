@@ -42,7 +42,13 @@ export async function POST(req: NextRequest) {
 
   const result = await buildPhoenixOrder(parsed.data);
   if (!result.ok) {
-    return NextResponse.json(result, { status: 502 });
+    const status =
+      result.source === "client"
+        ? 400
+        : result.status && result.status >= 400 && result.status < 600
+          ? result.status
+          : 502;
+    return NextResponse.json(result, { status });
   }
   return NextResponse.json(result);
 }

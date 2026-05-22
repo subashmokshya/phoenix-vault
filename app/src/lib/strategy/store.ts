@@ -73,9 +73,12 @@ export type ApprovedTrade = ProposedTrade & {
   explorerUrl?: string;
   referencePrice?: number;
   quantity?: number;
+  collateralUsdc?: number;
+  estimatedLiquidationPriceUsd?: number | null;
   tpTrigger?: number;
   slTrigger?: number;
   error?: string;
+  source?: "manual" | "ai" | "runner";
 };
 
 export function loadApproved(addr: string): ApprovedTrade[] {
