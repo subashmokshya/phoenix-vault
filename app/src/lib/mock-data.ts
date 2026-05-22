@@ -15,4 +15,6 @@ export type PoolCard = {
   sharePrice: number;
   navHistory: { ts: string; nav: number }[];
   phoenixAuthority?: string;
+  /** Manager has SPL-approved the platform relayer for instant withdrawals. */
+  relayerAuthorized?: boolean;
 };

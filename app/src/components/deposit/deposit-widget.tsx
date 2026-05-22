@@ -11,7 +11,9 @@ import {
   Info,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Wallet,
+  Zap,
 } from "lucide-react";
 import { PublicKey } from "@solana/web3.js";
 import { Button } from "@/components/ui/button";
@@ -20,7 +22,6 @@ import { useSolanaWallet } from "@/hooks/use-solana-wallet";
 import { useWallet } from "@/lib/wallet/context";
 import {
   clusterFromRpc,
-  deriveUsdcAta,
   getUsdcBalance,
   sendUsdcTransfer,
   type ClusterKind,
@@ -29,11 +30,8 @@ import {
   appendDeposit,
   appendWithdrawal,
   listDeposits,
-  listWithdrawals,
-  netPositionFor,
-  type WithdrawalRequest,
 } from "@/lib/deposits/store";
-import { cn, formatUsd, shortAddress } from "@/lib/utils";
+import { cn, formatUsd } from "@/lib/utils";
 import { primaryRpcUrl } from "@/lib/wallet/rpc";
 
 type Mode = "deposit" | "withdraw";
@@ -42,6 +40,7 @@ type Props = {
   poolAddress: string;
   poolName?: string;
   managerAddress: string;
+  relayerAuthorized?: boolean;
 };
 
 type Status =
@@ -50,16 +49,21 @@ type Status =
   | { phase: "signing" }
   | { phase: "confirming" }
   | { phase: "done"; signature: string; explorerUrl: string }
-  | { phase: "queued"; id: string }
+  | { phase: "withdrawn"; signature: string; explorerUrl: string; amount: number }
   | { phase: "error"; message: string };
 
-export function DepositWidget({ poolAddress, managerAddress }: Props) {
+export function DepositWidget({
+  poolAddress,
+  managerAddress,
+  relayerAuthorized,
+}: Props) {
   const [mode, setMode] = useState<Mode>("deposit");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const [balance, setBalance] = useState<number | null>(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [serverPosition, setServerPosition] = useState<number | null>(null);
 
   const { connected, address, connect, requireWallet } = useSolanaWallet();
   const { signAndSendTransaction } = useWallet();
@@ -78,13 +82,35 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
   }, [managerAddress]);
   const managerIsLive = managerPubkey !== null;
 
-  const myDeposited = address ? netPositionFor(address, poolAddress) : 0;
   const myDeposits = address
     ? listDeposits({ depositor: address, poolAddress })
     : [];
-  const myWithdrawals = address
-    ? listWithdrawals({ depositor: address, poolAddress })
-    : [];
+  const myDeposited =
+    serverPosition !== null
+      ? serverPosition
+      : myDeposits.reduce((sum, d) => sum + d.amount, 0);
+
+  const refreshPosition = useCallback(async () => {
+    if (!address) {
+      setServerPosition(null);
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/positions/${poolAddress}?depositor=${address}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as { net?: number };
+      if (typeof data.net === "number") setServerPosition(data.net);
+    } catch {
+      // keep local fallback
+    }
+  }, [address, poolAddress]);
+
+  useEffect(() => {
+    refreshPosition();
+  }, [refreshPosition, refreshKey]);
 
   const refreshBalance = useCallback(async () => {
     if (!address) {
@@ -173,7 +199,23 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
         explorerUrl: result.explorerUrl,
       });
       setAmount("");
-      setRefreshKey((k) => k + 1);
+      // Mirror the deposit to the server-side ledger so instant withdrawals
+      // know about the position. Best-effort; the server re-verifies on-chain.
+      void fetch("/api/deposits/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          poolAddress,
+          depositor: address,
+          signature: result.signature,
+          cluster,
+        }),
+      })
+        .catch(() => {
+          // best-effort; user can retry from /portfolio
+        })
+        .finally(() => setRefreshKey((k) => k + 1));
     } catch (e) {
       const message =
         e instanceof Error ? e.message : "Failed to send USDC transfer";
@@ -181,57 +223,92 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
     }
   }
 
-  function handleWithdrawRequest() {
+  async function handleInstantWithdraw() {
     if (!requireWallet() || !address) return;
     if (validAmount <= 0) {
       setStatus({ phase: "error", message: "Enter a USDC amount" });
       return;
     }
-    if (validAmount > myDeposited) {
+    if (validAmount > myDeposited + 1e-6) {
       setStatus({
         phase: "error",
-        message: `You can withdraw up to ${myDeposited.toFixed(2)} USDC based on your tracked deposits`,
+        message: `You can withdraw up to ${myDeposited.toFixed(2)} USDC based on your verified deposits`,
       });
       return;
     }
-    let depositorPubkey: PublicKey;
+    if (!relayerAuthorized) {
+      setStatus({
+        phase: "error",
+        message:
+          "Manager has not enabled instant withdrawals on this pool yet. Ask them to authorize the relayer from their dashboard.",
+      });
+      return;
+    }
+    setStatus({ phase: "preparing" });
     try {
-      depositorPubkey = new PublicKey(address);
-    } catch {
+      const res = await fetch("/api/withdrawals/instant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          poolAddress,
+          amountUsdc: validAmount,
+          cluster,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        signature?: string;
+        explorerUrl?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.signature) {
+        setStatus({
+          phase: "error",
+          message:
+            data.error ?? "Withdrawal failed. Please try again in a moment.",
+        });
+        return;
+      }
+      // Mirror to local ledger for UX continuity, but server is now authoritative.
+      appendWithdrawal({
+        id: data.signature,
+        poolAddress,
+        depositor: address,
+        depositorAta: "",
+        amount: validAmount,
+        ts: Date.now(),
+        status: "paid",
+        managerSignature: data.signature,
+        managerSignatureUrl: data.explorerUrl,
+        resolvedAt: Date.now(),
+      });
+      setStatus({
+        phase: "withdrawn",
+        signature: data.signature,
+        explorerUrl: data.explorerUrl ?? "",
+        amount: validAmount,
+      });
+      setAmount("");
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
       setStatus({
         phase: "error",
-        message: "Your connected wallet address looks invalid. Reconnect and retry.",
+        message:
+          e instanceof Error ? e.message : "Withdrawal failed unexpectedly",
       });
-      return;
     }
-    const req: WithdrawalRequest = {
-      id: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-      poolAddress,
-      depositor: address,
-      depositorAta: deriveUsdcAta(depositorPubkey, cluster).toBase58(),
-      amount: validAmount,
-      ts: Date.now(),
-      status: "pending",
-    };
-    appendWithdrawal(req);
-    setStatus({ phase: "queued", id: req.id });
-    setAmount("");
-    setRefreshKey((k) => k + 1);
   }
 
   function submit() {
     if (mode === "deposit") handleDeposit();
-    else handleWithdrawRequest();
+    else void handleInstantWithdraw();
   }
 
   const busy =
     status.phase === "preparing" ||
     status.phase === "signing" ||
     status.phase === "confirming";
-
-  const pendingWithdrawals = myWithdrawals.filter(
-    (w) => w.status === "pending" || w.status === "approved"
-  );
 
   return (
     <Card className="space-y-4">
@@ -334,18 +411,30 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
           </span>
         </div>
         <p>
-          Deposits go to the manager&apos;s USDC token account on Solana. The
-          deposit is recorded on-chain with a memo binding it to{" "}
-          <span className="font-mono">{shortAddress(poolAddress, 4)}</span>.
+          Deposits land in the manager&apos;s USDC account so they can route
+          Phoenix orders. Withdrawals are then refunded directly to your
+          wallet.
         </p>
-        <div className="flex items-start gap-1.5 text-accent">
-          <ShieldAlert className="h-3 w-3 mt-0.5 shrink-0" />
-          <p>
-            Manager-custodied until the on-chain vault program is audited and
-            deployed. Withdrawals are processed by the manager from this same
-            UI.
-          </p>
-        </div>
+        {relayerAuthorized ? (
+          <div className="flex items-start gap-1.5 text-positive">
+            <Zap className="h-3 w-3 mt-0.5 shrink-0" />
+            <p>
+              <span className="font-semibold">Instant withdrawals enabled.</span>{" "}
+              The manager has authorized a platform relayer to refund users
+              up to their tracked deposit balance — no approval required.
+              Manager retains the right to revoke this at any time.
+            </p>
+          </div>
+        ) : (
+          <div className="flex items-start gap-1.5 text-accent">
+            <ShieldAlert className="h-3 w-3 mt-0.5 shrink-0" />
+            <p>
+              Manager-custodied. Until the manager enables instant withdrawals
+              from their dashboard, you can deposit but withdrawals require
+              their signature.
+            </p>
+          </div>
+        )}
       </div>
 
       {!managerIsLive && (
@@ -375,7 +464,8 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
           !validAmount ||
           overBalance ||
           overPosition ||
-          (mode === "deposit" && !managerIsLive)
+          (mode === "deposit" && !managerIsLive) ||
+          (mode === "withdraw" && !relayerAuthorized)
         }
         onClick={() => (connected ? submit() : connect())}
       >
@@ -385,11 +475,15 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
             ? status.phase === "signing"
               ? "Awaiting signature…"
               : status.phase === "preparing"
-                ? "Preparing tx…"
+                ? mode === "withdraw"
+                  ? "Routing refund…"
+                  : "Preparing tx…"
                 : "Confirming on Solana…"
             : mode === "deposit"
               ? `Deposit ${validAmount ? validAmount.toFixed(2) : ""} USDC`
-              : `Request Withdraw ${validAmount ? validAmount.toFixed(2) : ""} USDC`}
+              : relayerAuthorized
+                ? `Withdraw ${validAmount ? validAmount.toFixed(2) : ""} USDC instantly`
+                : "Withdrawals not enabled yet"}
       </Button>
 
       {status.phase === "error" && (
@@ -418,18 +512,31 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
         </motion.div>
       )}
 
-      {status.phase === "queued" && (
+      {status.phase === "withdrawn" && (
         <motion.div
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-xs rounded-xl bg-accent/10 text-accent border border-accent/40 px-3 py-2"
+          className="text-xs flex items-center justify-between rounded-xl bg-positive/10 text-positive border border-positive/40 px-3 py-2"
         >
-          Withdrawal request sent to the manager. They&apos;ll process it from
-          their dashboard.
+          <span className="inline-flex items-center gap-1.5">
+            <ShieldCheck className="h-3 w-3" />
+            Withdrew {formatUsd(status.amount)}
+          </span>
+          {status.explorerUrl && (
+            <a
+              href={status.explorerUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono hover:underline inline-flex items-center gap-1"
+            >
+              {status.signature.slice(0, 8)}…
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
         </motion.div>
       )}
 
-      {address && (myDeposited > 0 || pendingWithdrawals.length > 0) && (
+      {address && myDeposited > 0 && (
         <div className="border-t border-border/60 pt-3 mt-2 space-y-2 text-xs">
           <div className="flex items-center justify-between">
             <span className="text-muted">Your position</span>
@@ -437,16 +544,6 @@ export function DepositWidget({ poolAddress, managerAddress }: Props) {
               {formatUsd(myDeposited)}
             </span>
           </div>
-          {pendingWithdrawals.length > 0 && (
-            <div className="flex items-center justify-between text-accent">
-              <span>Pending withdrawals</span>
-              <span className="tabular-nums">
-                {formatUsd(
-                  pendingWithdrawals.reduce((s, w) => s + w.amount, 0)
-                )}
-              </span>
-            </div>
-          )}
           {myDeposits.length > 0 && (
             <Link
               href="/portfolio"

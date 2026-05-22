@@ -29,6 +29,30 @@ export type RegistryPool = {
   featured: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Manager has SPL-approved the platform relayer to refund users on their behalf. */
+  relayerAuthorized?: boolean;
+  /** Solana cluster the manager authorized on (mainnet/devnet). */
+  relayerCluster?: "mainnet" | "devnet" | "testnet";
+  /** Tx signature of the approve instruction. */
+  relayerAuthorizeSignature?: string;
+};
+
+export type LedgerDeposit = {
+  signature: string;
+  poolAddress: string;
+  depositor: string;
+  amountUsdc: number;
+  ts: number;
+  cluster: "mainnet" | "devnet" | "testnet";
+};
+
+export type LedgerWithdrawal = {
+  signature: string;
+  poolAddress: string;
+  depositor: string;
+  amountUsdc: number;
+  ts: number;
+  cluster: "mainnet" | "devnet" | "testnet";
 };
 
 function readEnv(name: string): string | undefined {
@@ -145,6 +169,141 @@ export async function listPoolsFromRegistry(opts?: {
   return pools;
 }
 
+// ------------------------- Ledger -------------------------
+
+const DEPOSIT_KEY = (sig: string) => `deposit:${sig}`;
+const WITHDRAW_KEY = (sig: string) => `withdraw:${sig}`;
+const POOL_DEPOSIT_SET = (pool: string) => `pool:${pool}:deposits`;
+const POOL_WITHDRAW_SET = (pool: string) => `pool:${pool}:withdrawals`;
+const USER_POOL_DEPOSIT_SET = (user: string, pool: string) =>
+  `user:${user}:pool:${pool}:deposits`;
+const USER_POOL_WITHDRAW_SET = (user: string, pool: string) =>
+  `user:${user}:pool:${pool}:withdrawals`;
+
+export async function recordDeposit(entry: LedgerDeposit): Promise<void> {
+  const redis = getRegistry();
+  if (!redis) throw new Error("Registry is not configured");
+
+  const existing = await redis.get<LedgerDeposit>(DEPOSIT_KEY(entry.signature));
+  if (existing) return;
+
+  const pipe = redis.pipeline();
+  pipe.set(DEPOSIT_KEY(entry.signature), entry);
+  pipe.sadd(POOL_DEPOSIT_SET(entry.poolAddress), entry.signature);
+  pipe.sadd(
+    USER_POOL_DEPOSIT_SET(entry.depositor, entry.poolAddress),
+    entry.signature
+  );
+  await pipe.exec();
+}
+
+export async function recordWithdrawal(entry: LedgerWithdrawal): Promise<void> {
+  const redis = getRegistry();
+  if (!redis) throw new Error("Registry is not configured");
+
+  const existing = await redis.get<LedgerWithdrawal>(
+    WITHDRAW_KEY(entry.signature)
+  );
+  if (existing) return;
+
+  const pipe = redis.pipeline();
+  pipe.set(WITHDRAW_KEY(entry.signature), entry);
+  pipe.sadd(POOL_WITHDRAW_SET(entry.poolAddress), entry.signature);
+  pipe.sadd(
+    USER_POOL_WITHDRAW_SET(entry.depositor, entry.poolAddress),
+    entry.signature
+  );
+  await pipe.exec();
+}
+
+async function sumLedger<T extends { amountUsdc: number }>(
+  redis: Redis,
+  setKey: string,
+  itemKey: (sig: string) => string
+): Promise<{ total: number; entries: T[] }> {
+  const sigs = await redis.smembers(setKey);
+  if (!sigs.length) return { total: 0, entries: [] };
+  const keys = sigs.map(itemKey);
+  const rows = (await redis.mget<T[]>(...keys)) ?? [];
+  const entries = rows.filter((r): r is T => Boolean(r));
+  const total = entries.reduce((s, e) => s + Number(e.amountUsdc), 0);
+  return { total, entries };
+}
+
+export async function getNetPosition(
+  depositor: string,
+  poolAddress: string
+): Promise<{
+  deposited: number;
+  withdrawn: number;
+  net: number;
+  deposits: LedgerDeposit[];
+  withdrawals: LedgerWithdrawal[];
+}> {
+  const redis = getRegistry();
+  if (!redis) {
+    return { deposited: 0, withdrawn: 0, net: 0, deposits: [], withdrawals: [] };
+  }
+  const [deposits, withdrawals] = await Promise.all([
+    sumLedger<LedgerDeposit>(
+      redis,
+      USER_POOL_DEPOSIT_SET(depositor, poolAddress),
+      DEPOSIT_KEY
+    ),
+    sumLedger<LedgerWithdrawal>(
+      redis,
+      USER_POOL_WITHDRAW_SET(depositor, poolAddress),
+      WITHDRAW_KEY
+    ),
+  ]);
+  return {
+    deposited: deposits.total,
+    withdrawn: withdrawals.total,
+    net: Math.max(0, deposits.total - withdrawals.total),
+    deposits: deposits.entries,
+    withdrawals: withdrawals.entries,
+  };
+}
+
+export async function getPoolWithdrawals(
+  poolAddress: string,
+  limit = 50
+): Promise<LedgerWithdrawal[]> {
+  const redis = getRegistry();
+  if (!redis) return [];
+  const sigs = await redis.smembers(POOL_WITHDRAW_SET(poolAddress));
+  if (!sigs.length) return [];
+  const keys = sigs.map(WITHDRAW_KEY);
+  const rows = (await redis.mget<LedgerWithdrawal[]>(...keys)) ?? [];
+  return rows
+    .filter((r): r is LedgerWithdrawal => Boolean(r))
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, limit);
+}
+
+export async function setRelayerAuthorization(
+  poolAddress: string,
+  data: {
+    authorized: boolean;
+    cluster?: "mainnet" | "devnet" | "testnet";
+    signature?: string;
+  }
+): Promise<RegistryPool | null> {
+  const redis = getRegistry();
+  if (!redis) throw new Error("Registry is not configured");
+  const pool = await redis.get<RegistryPool>(POOL_KEY(poolAddress));
+  if (!pool) return null;
+  const updated: RegistryPool = {
+    ...pool,
+    relayerAuthorized: data.authorized,
+    relayerCluster: data.cluster ?? pool.relayerCluster,
+    relayerAuthorizeSignature: data.signature ?? pool.relayerAuthorizeSignature,
+    updatedAt: new Date().toISOString(),
+  };
+  await redis.set(POOL_KEY(poolAddress), updated);
+  return updated;
+}
+
 export function poolToCard(p: RegistryPool): PoolCard {
   return {
     address: p.address,
@@ -163,5 +322,6 @@ export function poolToCard(p: RegistryPool): PoolCard {
     sharePrice: 1,
     navHistory: [],
     phoenixAuthority: p.phoenixAuthority,
+    relayerAuthorized: p.relayerAuthorized,
   };
 }

@@ -234,6 +234,7 @@ export default function PoolDetailPage() {
               poolAddress={poolAddress}
               poolName={pool.name}
               managerAddress={pool.manager}
+              relayerAuthorized={pool.relayerAuthorized}
             />
           </div>
         </aside>

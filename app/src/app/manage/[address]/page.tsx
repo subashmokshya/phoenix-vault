@@ -15,7 +15,7 @@ import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { StrategyEditor } from "@/components/strategy/strategy-editor";
 import { StrategyCopilot } from "@/components/strategy/strategy-copilot";
 import { ProposedTrades } from "@/components/strategy/proposed-trades";
-import { PendingWithdrawals } from "@/components/deposit/pending-withdrawals";
+import { InstantWithdrawalsAdmin } from "@/components/deposit/instant-withdrawals-admin";
 import {
   useLivePositions,
   useLiveTrades,
@@ -419,7 +419,19 @@ export default function ManagePoolPage() {
       <div className="grid lg:grid-cols-[1fr_1.05fr] gap-6 items-start">
         <div className="space-y-6">
           <LivePositionsPanel poolAddress={address} />
-          <PendingWithdrawals poolAddress={address} isManager={isManager} />
+          {pool && (
+            <InstantWithdrawalsAdmin
+              poolAddress={address}
+              managerAddress={pool.manager}
+              isManager={isManager}
+              relayerAuthorized={pool.relayerAuthorized}
+              onAuthorizationChange={(next) =>
+                setPool((p) =>
+                  p ? { ...p, relayerAuthorized: next } : p
+                )
+              }
+            />
+          )}
           {routeFlash && (
             <div
               className={cn(
