@@ -1,6 +1,7 @@
 import "server-only";
 import {
   Connection,
+  LAMPORTS_PER_SOL,
   PublicKey,
   Transaction,
   TransactionInstruction,
@@ -138,6 +139,20 @@ export async function relayUsdcRefund(
   const { blockhash, lastValidBlockHeight, rpcUrl } =
     await getBlockhashWithFallback(cluster);
   const connection = new Connection(rpcUrl, "confirmed");
+
+  const relayerBalance = await connection.getBalance(
+    relayer.publicKey,
+    "confirmed"
+  );
+  // Covers several signatures plus ATA rent if the recipient's USDC ATA needs
+  // to be created by the relayer. Keep this high enough to avoid opaque
+  // "Attempt to debit an account..." simulation failures.
+  const minRelayerLamports = Math.ceil(0.005 * LAMPORTS_PER_SOL);
+  if (relayerBalance < minRelayerLamports) {
+    throw new Error(
+      `Withdrawal relayer needs SOL for network fees. Send at least 0.01 SOL to ${relayer.publicKey.toBase58()} and retry. Current balance: ${(relayerBalance / LAMPORTS_PER_SOL).toFixed(6)} SOL.`
+    );
+  }
 
   // Sanity: confirm the manager ATA exists and has at least `amount`, and the
   // delegate of that ATA is our relayer pubkey with at least `amount` allowance.
