@@ -23,6 +23,9 @@ import {
   useLiveTrades,
 } from "@/hooks/use-phoenix-live";
 import { useStrategyRunner } from "@/hooks/use-strategy-runner";
+import { StrategyActivityFeed } from "@/components/strategy/strategy-activity-feed";
+import { newLogId, writeStrategyLog } from "@/lib/strategy/log-client";
+import { diffSpec } from "@/lib/strategy/spec-diff";
 import {
   DEFAULT_SPEC,
   type Market,
@@ -188,15 +191,29 @@ export default function ManagePoolPage() {
         return;
       }
       const leverage = Math.max(1, Math.round((spec.leverageMin + spec.leverageMax) / 2));
+      const orderSource = opts?.source ?? "ai";
       const pendingEntry: ApprovedTrade = {
         ...t,
         approvedAt: Date.now(),
         status: "submitting",
         referencePrice,
-        source: opts?.source ?? "ai",
+        source: orderSource,
       };
       setQueue((q) => q.filter((x) => x.id !== t.id));
       setApproved((a) => [pendingEntry, ...a]);
+      void writeStrategyLog(address, {
+        id: t.id,
+        kind: "order",
+        ts: Date.now(),
+        source: orderSource,
+        market: t.market,
+        side: t.side,
+        orderType: t.orderType,
+        sizeUsd: t.sizeUsd,
+        status: "submitting",
+        referencePrice,
+        rationale: t.rationale,
+      });
 
       try {
         const outcome = await placePhoenixOrder(
@@ -242,6 +259,26 @@ export default function ManagePoolPage() {
             sig: outcome.signature,
             explorerUrl: outcome.explorerUrl,
           });
+          void writeStrategyLog(address, {
+            id: `${t.id}:fill`,
+            kind: "order",
+            ts: Date.now(),
+            source: orderSource,
+            market: t.market,
+            side: t.side,
+            orderType: t.orderType,
+            sizeUsd: t.sizeUsd,
+            status: "filled",
+            signature: outcome.signature,
+            explorerUrl: outcome.explorerUrl,
+            quantity: outcome.quantity,
+            referencePrice: outcome.referencePrice,
+            collateralUsdc: outcome.collateralUsdc,
+            estimatedLiquidationPriceUsd: outcome.estimatedLiquidationPriceUsd,
+            tpTrigger: outcome.tpTrigger,
+            slTrigger: outcome.slTrigger,
+            rationale: t.rationale,
+          });
         } else {
           const detail = outcome.detail
             ? ` — ${outcome.detail}`
@@ -265,6 +302,19 @@ export default function ManagePoolPage() {
               ? `Phoenix beta access required for this wallet — order not routed.${detail}`
               : outcome.error,
           });
+          void writeStrategyLog(address, {
+            id: `${t.id}:rej`,
+            kind: "order",
+            ts: Date.now(),
+            source: orderSource,
+            market: t.market,
+            side: t.side,
+            orderType: t.orderType,
+            sizeUsd: t.sizeUsd,
+            status: blocked ? "blocked" : "rejected",
+            error: `${outcome.error}${detail}`,
+            rationale: t.rationale,
+          });
         }
       } catch (e) {
         setApproved((a) =>
@@ -282,11 +332,25 @@ export default function ManagePoolPage() {
           kind: "err",
           text: e instanceof Error ? e.message : "Order failed",
         });
+        void writeStrategyLog(address, {
+          id: `${t.id}:err`,
+          kind: "order",
+          ts: Date.now(),
+          source: orderSource,
+          market: t.market,
+          side: t.side,
+          orderType: t.orderType,
+          sizeUsd: t.sizeUsd,
+          status: "rejected",
+          error: e instanceof Error ? e.message : String(e),
+          rationale: t.rationale,
+        });
       } finally {
         setRoutingId(null);
       }
     },
     [
+      address,
       isManager,
       walletAddress,
       signAndSendTransaction,
@@ -329,8 +393,65 @@ export default function ManagePoolPage() {
       onProposeTrade: async (t) => {
         await proposeTrade(t, { source: "runner" });
       },
+      onDecision: (d) => {
+        if (!isManager) return;
+        void writeStrategyLog(address, {
+          id: d.id,
+          kind: "tick",
+          ts: d.ts,
+          source: d.source,
+          summary: d.summary,
+          actions: d.actions,
+          proposedIds: d.proposedIds,
+          executedIds: d.executedIds,
+          error: d.error,
+        });
+      },
     },
   });
+
+  // Mirror runner arm/disarm to the public log so depositors see when the
+  // strategy starts/stops evaluating.
+  const [runnerLogged, setRunnerLogged] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!isManager) return;
+    if (runnerLogged === null) {
+      setRunnerLogged(runner.enabled);
+      return;
+    }
+    if (runnerLogged === runner.enabled) return;
+    setRunnerLogged(runner.enabled);
+    void writeStrategyLog(address, {
+      id: newLogId("system"),
+      kind: "system",
+      ts: Date.now(),
+      summary: runner.enabled
+        ? `Manager armed the strategy runner — ticks every ${runner.state.intervalSec}s`
+        : "Manager disarmed the strategy runner",
+      level: runner.enabled ? "info" : "warn",
+    });
+  }, [isManager, runner.enabled, runner.state.intervalSec, address, runnerLogged]);
+
+  const handleSpecChange = useCallback(
+    (next: StrategySpec) => {
+      const changes = diffSpec(spec, next);
+      setSpec(next);
+      if (isManager && changes.length > 0) {
+        void writeStrategyLog(address, {
+          id: newLogId("spec"),
+          kind: "spec",
+          ts: Date.now(),
+          source: "manager",
+          summary:
+            changes.length === 1
+              ? changes[0]
+              : `${changes.length} fields updated`,
+          changes,
+        });
+      }
+    },
+    [address, isManager, spec]
+  );
 
   const placeManualOrder = useCallback(
     async (input: {
@@ -372,6 +493,18 @@ export default function ManagePoolPage() {
       setApproved((a) => [pendingEntry, ...a]);
       setRoutingId(tradeId);
       setRouteFlash(null);
+      void writeStrategyLog(address, {
+        id: tradeId,
+        kind: "order",
+        ts: Date.now(),
+        source: "manual",
+        market: input.market,
+        side: input.side,
+        orderType: "market",
+        sizeUsd: input.sizeUsd,
+        status: "submitting",
+        referencePrice: refPrice,
+      });
 
       try {
         const outcome = await placePhoenixOrder(
@@ -416,6 +549,25 @@ export default function ManagePoolPage() {
             sig: outcome.signature,
             explorerUrl: outcome.explorerUrl,
           });
+          void writeStrategyLog(address, {
+            id: `${tradeId}:fill`,
+            kind: "order",
+            ts: Date.now(),
+            source: "manual",
+            market: input.market,
+            side: input.side,
+            orderType: "market",
+            sizeUsd: input.sizeUsd,
+            status: "filled",
+            signature: outcome.signature,
+            explorerUrl: outcome.explorerUrl,
+            quantity: outcome.quantity,
+            referencePrice: outcome.referencePrice,
+            collateralUsdc: outcome.collateralUsdc,
+            estimatedLiquidationPriceUsd: outcome.estimatedLiquidationPriceUsd,
+            tpTrigger: outcome.tpTrigger,
+            slTrigger: outcome.slTrigger,
+          });
         } else {
           const detail = outcome.detail ? ` — ${outcome.detail}` : "";
           setApproved((a) =>
@@ -437,6 +589,18 @@ export default function ManagePoolPage() {
                 ? `Phoenix beta access required — manual order not routed.${detail}`
                 : `${outcome.error}${detail}`,
           });
+          void writeStrategyLog(address, {
+            id: `${tradeId}:rej`,
+            kind: "order",
+            ts: Date.now(),
+            source: "manual",
+            market: input.market,
+            side: input.side,
+            orderType: "market",
+            sizeUsd: input.sizeUsd,
+            status: outcome.kind === "blocked" ? "blocked" : "rejected",
+            error: `${outcome.error}${detail}`,
+          });
         }
       } catch (e) {
         setApproved((a) =>
@@ -454,11 +618,24 @@ export default function ManagePoolPage() {
           kind: "err",
           text: e instanceof Error ? e.message : "Order failed",
         });
+        void writeStrategyLog(address, {
+          id: `${tradeId}:err`,
+          kind: "order",
+          ts: Date.now(),
+          source: "manual",
+          market: input.market,
+          side: input.side,
+          orderType: "market",
+          sizeUsd: input.sizeUsd,
+          status: "rejected",
+          error: e instanceof Error ? e.message : String(e),
+        });
       } finally {
         setRoutingId(null);
       }
     },
     [
+      address,
       isManager,
       walletAddress,
       signAndSendTransaction,
@@ -679,6 +856,11 @@ export default function ManagePoolPage() {
             }
           />
           <ApprovedTradesPanel approved={approved} />
+          <StrategyActivityFeed
+            poolAddress={address}
+            audience="manager"
+            title="Strategy Activity"
+          />
           <LiveTradeLog poolAddress={address} />
         </div>
 
@@ -688,7 +870,7 @@ export default function ManagePoolPage() {
               poolName={pool.name}
               strategyTag={pool.strategyTag}
               spec={spec}
-              onSpecChange={setSpec}
+              onSpecChange={handleSpecChange}
               onPropose={(t) => proposeTrade(t, { source: "ai" })}
               positions={positions.data?.positions ?? []}
               recentTrades={trades.data ?? []}
@@ -697,7 +879,7 @@ export default function ManagePoolPage() {
           <div className="lg:overflow-y-auto lg:pr-1">
             <StrategyEditor
               spec={spec}
-              onChange={setSpec}
+              onChange={handleSpecChange}
               readOnly={!isManager && connected}
             />
           </div>

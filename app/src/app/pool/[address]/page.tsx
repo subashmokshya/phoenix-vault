@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { LivePositionsPanel } from "@/components/live/live-positions";
 import { LiveTradeLog } from "@/components/live/live-trade-log";
 import { DepositWidget } from "@/components/deposit/deposit-widget";
+import { StrategyActivityFeed } from "@/components/strategy/strategy-activity-feed";
 import type { PoolCard } from "@/lib/mock-data";
 import { getLocalPool } from "@/lib/pools/local-pools";
 import { recoveryPoolCard } from "@/lib/pools/recovery";
@@ -198,6 +199,12 @@ export default function PoolDetailPage() {
             <LivePositionsPanel
               poolAddress={poolAddress}
               authorityHint={phoenixAuthority}
+            />
+            <StrategyActivityFeed
+              poolAddress={poolAddress}
+              audience="public"
+              title="Strategy Activity"
+              emptyHint="The manager hasn't run the strategy yet. Once they arm the AI runner or place an order, every decision and fill streams here in real time."
             />
             <LiveTradeLog
               poolAddress={poolAddress}

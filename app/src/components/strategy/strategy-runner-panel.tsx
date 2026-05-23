@@ -1,15 +1,11 @@
 "use client";
 
-import { motion } from "framer-motion";
 import {
   Activity,
-  CheckCircle2,
-  CircleDashed,
   Pause,
   Play,
   RefreshCw,
   Trash2,
-  XCircle,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -147,74 +143,23 @@ export function StrategyRunnerPanel({
         </span>
       </div>
 
-      {state.decisions.length > 0 ? (
-        <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
-          {state.decisions.slice(0, 12).map((d) => (
-            <motion.div
-              key={d.id}
-              initial={{ opacity: 0, y: -3 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-xl border border-border/40 bg-surface-2/60 px-3 py-2 text-xs"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  {d.error ? (
-                    <XCircle className="h-3.5 w-3.5 text-negative" />
-                  ) : d.proposedIds.length > 0 ? (
-                    <CheckCircle2 className="h-3.5 w-3.5 text-positive" />
-                  ) : (
-                    <CircleDashed className="h-3.5 w-3.5 text-muted" />
-                  )}
-                  <span className="font-medium text-foreground">
-                    {d.error
-                      ? "error"
-                      : d.proposedIds.length > 0
-                        ? `proposed ${d.proposedIds.length}`
-                        : "hold"}
-                  </span>
-                  <span className="text-muted">
-                    {d.source === "manual" ? "manual" : "auto"} ·{" "}
-                    {new Date(d.ts).toLocaleTimeString()}
-                  </span>
-                </div>
-                {d.executedIds.length > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-positive/10 text-positive">
-                    fired {d.executedIds.length}
-                  </span>
-                )}
-              </div>
-              <div className={cn("mt-1 text-muted", d.error && "text-negative")}>
-                {d.error || d.summary}
-              </div>
-              {d.actions.length > 0 && (
-                <ul className="mt-1.5 space-y-0.5 text-[11px]">
-                  {d.actions.map((a, i) => (
-                    <li key={i} className="text-muted">
-                      {a.kind === "propose"
-                        ? `→ ${a.side.toUpperCase()} ${a.market} $${a.sizeUsd.toLocaleString()} (${a.orderType}) — ${a.rationale}`
-                        : a.kind === "note"
-                          ? `📝 ${a.text}`
-                          : `· ${a.reason}`}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </motion.div>
-          ))}
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={clearHistory}
-              className="text-[11px] text-muted hover:text-foreground inline-flex items-center gap-1"
-            >
-              <Trash2 className="h-3 w-3" /> clear history
-            </button>
-          </div>
-        </div>
-      ) : (
+      {state.decisions.length === 0 ? (
         <p className="text-xs text-muted italic">
           No ticks yet. Arm the runner or click <strong>Run now</strong> to test the pipeline.
         </p>
+      ) : (
+        <div className="flex items-center justify-between text-[11px] text-muted">
+          <span>
+            Latest: <strong className="text-foreground">{state.decisions[0]?.summary?.slice(0, 80) || "—"}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={clearHistory}
+            className="hover:text-foreground inline-flex items-center gap-1"
+          >
+            <Trash2 className="h-3 w-3" /> clear local
+          </button>
+        </div>
       )}
     </Card>
   );

@@ -281,6 +281,60 @@ export async function getPoolWithdrawals(
     .slice(0, limit);
 }
 
+export type StrategyLogTickAction =
+  | { kind: "propose"; market: string; side: "buy" | "sell"; sizeUsd: number; orderType: "market" | "limit"; rationale: string }
+  | { kind: "hold"; reason: string }
+  | { kind: "note"; text: string };
+
+export type StrategyLogEntry =
+  | {
+      id: string;
+      kind: "tick";
+      ts: number;
+      source: "auto" | "manual";
+      summary: string;
+      actions: StrategyLogTickAction[];
+      proposedIds: string[];
+      executedIds: string[];
+      error?: string;
+    }
+  | {
+      id: string;
+      kind: "order";
+      ts: number;
+      source: "manual" | "ai" | "runner";
+      market: string;
+      side: "buy" | "sell";
+      orderType: "market" | "limit";
+      sizeUsd: number;
+      status: "submitting" | "filled" | "rejected" | "blocked";
+      signature?: string;
+      explorerUrl?: string;
+      quantity?: number;
+      collateralUsdc?: number;
+      referencePrice?: number;
+      estimatedLiquidationPriceUsd?: number | null;
+      tpTrigger?: number;
+      slTrigger?: number;
+      rationale?: string;
+      error?: string;
+    }
+  | {
+      id: string;
+      kind: "spec";
+      ts: number;
+      source: "manager" | "ai" | "runner";
+      summary: string;
+      changes: string[];
+    }
+  | {
+      id: string;
+      kind: "system";
+      ts: number;
+      summary: string;
+      level?: "info" | "warn" | "error";
+    };
+
 export type PoolAggregates = {
   totalDeposited: number;
   totalWithdrawn: number;
@@ -358,6 +412,63 @@ export async function getPoolAggregates(
     depositorCount,
     lastDepositTs,
   };
+}
+
+// ------------------------- Strategy Activity Log -------------------------
+
+const STRATEGY_LOG_KEY = (pool: string) => `pool:${pool}:strategy:logs`;
+const STRATEGY_LOG_LIMIT = 200;
+
+export async function appendStrategyLog(
+  poolAddress: string,
+  entry: StrategyLogEntry
+): Promise<StrategyLogEntry> {
+  const redis = getRegistry();
+  if (!redis) throw new Error("Registry is not configured");
+
+  // Use a Redis list (LPUSH + LTRIM) so the newest entry is at index 0 and
+  // the list stays bounded. Each entry is JSON-serialized.
+  const key = STRATEGY_LOG_KEY(poolAddress);
+  const payload = JSON.stringify(entry);
+  const pipe = redis.pipeline();
+  pipe.lpush(key, payload);
+  pipe.ltrim(key, 0, STRATEGY_LOG_LIMIT - 1);
+  await pipe.exec();
+  return entry;
+}
+
+function parseLogEntry(raw: unknown): StrategyLogEntry | null {
+  if (raw == null) return null;
+  if (typeof raw === "object") return raw as StrategyLogEntry;
+  if (typeof raw !== "string") return null;
+  try {
+    return JSON.parse(raw) as StrategyLogEntry;
+  } catch {
+    return null;
+  }
+}
+
+export async function listStrategyLogs(
+  poolAddress: string,
+  limit = 50
+): Promise<StrategyLogEntry[]> {
+  const redis = getRegistry();
+  if (!redis) return [];
+  const cap = Math.max(1, Math.min(STRATEGY_LOG_LIMIT, limit));
+  const rows = (await redis.lrange<unknown>(
+    STRATEGY_LOG_KEY(poolAddress),
+    0,
+    cap - 1
+  )) as unknown[];
+  return rows
+    .map(parseLogEntry)
+    .filter((e): e is StrategyLogEntry => Boolean(e));
+}
+
+export async function clearStrategyLogs(poolAddress: string): Promise<void> {
+  const redis = getRegistry();
+  if (!redis) return;
+  await redis.del(STRATEGY_LOG_KEY(poolAddress));
 }
 
 export async function setRelayerAuthorization(

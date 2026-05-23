@@ -30,6 +30,7 @@ export type StrategyRunnerCallbacks = {
   onProposeTrade: (t: ProposedTrade, source: "runner") => Promise<void> | void;
   onUpdateSpec?: (next: StrategySpec) => void;
   onNote?: (text: string) => void;
+  onDecision?: (d: RunnerDecision) => void;
 };
 
 export type StrategyRunnerHandle = {
@@ -236,6 +237,7 @@ export function useStrategyRunner(params: {
       ...prev,
       decisions: [d, ...prev.decisions].slice(0, 50),
     }));
+    callbacksRef.current.onDecision?.(d);
   }
 
   useEffect(() => {
